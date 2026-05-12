@@ -74,19 +74,28 @@ curl http://localhost:8001/metrics       # Prometheus metrics
 
 ```toml
 [server]
-stream_bind = "0.0.0.0:8000"
-admin_bind  = "127.0.0.1:8001"
+stream_bind = "0.0.0.0:8000"        # public stream + source ingest
+admin_bind  = "127.0.0.1:8001"      # admin UI + REST API + /metrics
 hostname    = "localhost"
+
+[logging]
+level  = "info"                     # trace | debug | info | warn | error
+format = "pretty"                   # pretty | json
 
 [limits]
 max_listeners_global  = 500
-ring_size             = 64        # broadcast ring buffer slots
+ring_size             = 64          # broadcast ring buffer slots
 slow_listener_grace_s = 2
+# source_max_kbps     = 128         # optional: cap source ingest rate
 
 [auth]
+# Optional: any source authenticating with this password may create a
+# dynamic mount not listed under [[mounts]]. Removed on disconnect.
+# source_password = "letmesource"
+
 [[auth.users]]
 username        = "admin"
-password_bcrypt = "$2b$12$..."    # bcrypt hash; generate with htpasswd
+password_bcrypt = "$2b$12$..."      # bcrypt hash; generate with htpasswd
 
 [[mounts]]
 path            = "/stream"
@@ -94,7 +103,7 @@ source_password = "hackme"
 name            = "My Radio"
 description     = "Optional description"
 genre           = "Music"
-max_listeners   = 100             # omit for unlimited
+max_listeners   = 100               # omit for unlimited
 ```
 
 Send `SIGHUP` to hot-reload the config (mount metadata and auth credentials update without dropping listeners).
