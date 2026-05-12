@@ -99,17 +99,21 @@ async function refreshLanding() {
       list.innerHTML = '<div class="streams-empty">— no active streams —</div>';
       return;
     }
-    list.innerHTML = live.map((m) => `
-      <div class="stream-row">
-        <div class="stream-meta">
-          <span class="stream-path">${escapeHtml(m.path)}</span>
-          ${m.name ? `<span class="stream-name">${escapeHtml(m.name)}</span>` : ''}
-        </div>
-        <span class="stream-listeners">
-          <span class="live-dot"></span>${m.listener_count}
-        </span>
-      </div>
-    `).join('');
+    const streamBase = `${location.protocol}//${location.hostname}:${stats.stream_port}`;
+    list.innerHTML = live.map((m) => {
+      const href = `${streamBase}${m.path}`;
+      return `
+        <a class="stream-row" href="${escapeHtml(href)}" target="_blank" rel="noopener">
+          <div class="stream-meta">
+            <span class="stream-path">${escapeHtml(m.path)}</span>
+            ${m.name ? `<span class="stream-name">${escapeHtml(m.name)}</span>` : ''}
+          </div>
+          <span class="stream-listeners">
+            <span class="live-dot"></span>${m.listener_count}
+          </span>
+        </a>
+      `;
+    }).join('');
   } catch (e) {
     console.error('landing refresh failed', e);
   }

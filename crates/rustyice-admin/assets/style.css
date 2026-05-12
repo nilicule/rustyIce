@@ -201,8 +201,17 @@ main {
   gap: 1rem;
   padding: .9rem 1.25rem;
   border-bottom: 1px solid var(--line-soft);
+  color: inherit;
+  text-decoration: none;
+  transition: background 120ms ease;
 }
 .stream-row:last-child { border-bottom: none; }
+a.stream-row:hover {
+  background: var(--bg-elev-2);
+}
+a.stream-row:hover .stream-path::before {
+  color: var(--accent-2);
+}
 .stream-meta { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
 .stream-path {
   font-family: var(--mono);

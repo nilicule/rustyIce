@@ -9,6 +9,7 @@ pub struct GlobalStats {
     pub total_mounts: usize,
     pub total_listeners: usize,
     pub version: &'static str,
+    pub stream_port: u16,
 }
 
 pub async fn global_stats(State(state): State<AdminState>) -> Json<GlobalStats> {
@@ -17,5 +18,6 @@ pub async fn global_stats(State(state): State<AdminState>) -> Json<GlobalStats> 
         total_mounts: state.mounts.list().len(),
         total_listeners: state.listeners.total_count(),
         version: state.version,
+        stream_port: state.stream_port,
     })
 }

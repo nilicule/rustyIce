@@ -107,6 +107,7 @@ async fn build_test_server_with(
         auth,
         sessions: SessionStore::new(std::time::Duration::from_secs(3600)),
         version: env!("CARGO_PKG_VERSION"),
+        stream_port: 0,
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

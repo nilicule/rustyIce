@@ -34,6 +34,7 @@ impl AppState {
             auth: self.auth.clone(),
             sessions: SessionStore::new(Duration::from_secs(24 * 60 * 60)),
             version: env!("CARGO_PKG_VERSION"),
+            stream_port: self.config.load().server.stream_bind.port(),
         }
     }
 }

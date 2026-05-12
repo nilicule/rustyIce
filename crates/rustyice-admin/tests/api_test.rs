@@ -59,6 +59,7 @@ fn make_state_with_admin(password: Option<&str>) -> AdminState {
         auth: Arc::new(TestAuth { admin_password: password.map(str::to_string) }),
         sessions: SessionStore::new(Duration::from_secs(3600)),
         version: "test",
+        stream_port: 8000,
     }
 }
 
