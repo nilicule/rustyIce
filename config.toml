@@ -1,0 +1,26 @@
+[server]
+stream_bind = "0.0.0.0:8000"
+admin_bind  = "127.0.0.1:8001"
+hostname    = "localhost"
+
+[logging]
+level  = "debug"
+format = "pretty"
+
+[auth]
+[[auth.users]]
+username        = "admin"
+# bcrypt of "adminpass" — regenerate: htpasswd -bnBC 12 "" adminpass | tr -d ':\n'
+password_bcrypt = "$2b$12$Ei5EjJCSDDSfFPJU8jFoqeAJORGbHfwCU6nkdpkk5JFNB4W.LCrZS"
+
+[limits]
+max_listeners_global  = 500
+ring_size             = 64
+slow_listener_grace_s = 2
+
+[[mounts]]
+path            = "/stream"
+source_password = "hackme"
+name            = "Test Radio"
+description     = "Development stream"
+genre           = "Test"
