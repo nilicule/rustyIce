@@ -1,8 +1,5 @@
 /target
-# docs/superpowers sub-directories are selectively tracked
-docs/superpowers/*
-!docs/superpowers/specs
-!docs/superpowers/plans
+docs/superpowers/
 .claude
 CLAUDE.md
-.idea
+.idea/
