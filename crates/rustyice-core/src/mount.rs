@@ -95,23 +95,40 @@ impl MountRegistry {
     }
 
     /// Register a mount. Replaces any existing mount at the same path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `RwLock` is poisoned.
     pub fn add(&self, mount: Arc<ActiveMount>) {
         let path = mount.info.load().path.clone();
         self.inner.write().expect("mount registry poisoned").insert(path, mount);
     }
 
     /// Remove and return the mount at `path`, or `None` if not present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `RwLock` is poisoned.
+    #[must_use]
     pub fn remove(&self, path: &str) -> Option<Arc<ActiveMount>> {
         self.inner.write().expect("mount registry poisoned").remove(path)
     }
 
     /// Look up a mount by path. Returns `None` if the mount doesn't exist.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `RwLock` is poisoned.
     #[must_use]
     pub fn get(&self, path: &str) -> Option<Arc<ActiveMount>> {
         self.inner.read().expect("mount registry poisoned").get(path).cloned()
     }
 
     /// Snapshot of all current mounts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `RwLock` is poisoned.
     #[must_use]
     pub fn list(&self) -> Vec<Arc<ActiveMount>> {
         self.inner.read().expect("mount registry poisoned").values().cloned().collect()
