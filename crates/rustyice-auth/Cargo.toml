@@ -1,0 +1,12 @@
+[package]
+name    = "rustyice-auth"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustyice-core = { path = "../rustyice-core" }
+bcrypt.workspace      = true
+thiserror.workspace   = true
+async-trait.workspace = true
+tokio                 = { workspace = true, features = ["rt"] }
+arc-swap.workspace    = true

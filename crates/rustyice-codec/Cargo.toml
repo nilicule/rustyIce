@@ -1,0 +1,9 @@
+[package]
+name    = "rustyice-codec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustyice-core = { path = "../rustyice-core" }
+bytes.workspace     = true
+thiserror.workspace = true

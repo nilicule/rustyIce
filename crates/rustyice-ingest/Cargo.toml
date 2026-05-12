@@ -1,0 +1,13 @@
+[package]
+name    = "rustyice-ingest"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustyice-core = { path = "../rustyice-core" }
+tokio         = { workspace = true, features = ["io-util"] }
+bytes.workspace      = true
+thiserror.workspace  = true
+async-trait.workspace = true
+futures.workspace    = true
+tracing.workspace    = true

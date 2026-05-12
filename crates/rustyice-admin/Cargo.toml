@@ -1,0 +1,24 @@
+[package]
+name    = "rustyice-admin"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustyice-core = { path = "../rustyice-core" }
+axum.workspace        = true
+tower.workspace       = true
+tower-http.workspace  = true
+serde.workspace       = true
+bytes.workspace       = true
+thiserror.workspace   = true
+tracing.workspace     = true
+metrics.workspace     = true
+metrics-exporter-prometheus = { workspace = true }
+rust-embed.workspace  = true
+mime_guess.workspace  = true
+tokio                 = { workspace = true, features = ["sync"] }
+arc-swap.workspace    = true
+
+[dev-dependencies]
+tokio             = { workspace = true, features = ["rt-multi-thread", "macros"] }
+axum              = { workspace = true }

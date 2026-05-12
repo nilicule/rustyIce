@@ -1,0 +1,31 @@
+[package]
+name    = "rustyice-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rustyice"
+path = "src/main.rs"
+
+[dependencies]
+rustyice-core   = { path = "../rustyice-core" }
+rustyice-codec  = { path = "../rustyice-codec" }
+rustyice-auth   = { path = "../rustyice-auth" }
+rustyice-ingest = { path = "../rustyice-ingest" }
+rustyice-output = { path = "../rustyice-output" }
+rustyice-admin  = { path = "../rustyice-admin" }
+
+tokio           = { workspace = true, features = ["full"] }
+axum.workspace  = true
+tower.workspace = true
+http.workspace  = true
+serde.workspace = true
+toml.workspace  = true
+tracing.workspace              = true
+tracing-subscriber.workspace   = true
+metrics.workspace              = true
+metrics-exporter-prometheus.workspace = true
+arc-swap.workspace  = true
+bytes.workspace     = true
+thiserror.workspace = true
+futures.workspace   = true
