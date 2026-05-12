@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rustyice-core = { path = "../rustyice-core" }
+rustyice-core  = { path = "../rustyice-core" }
+rustyice-codec = { path = "../rustyice-codec" }
 tokio         = { workspace = true, features = ["io-util"] }
 bytes.workspace      = true
 thiserror.workspace  = true

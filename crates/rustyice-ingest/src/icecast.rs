@@ -52,6 +52,10 @@ impl IngestProtocol for IcecastIngest {
         let mut stats = SourceStats::default();
         let start = Instant::now();
         let mut buf = vec![0u8; self.chunk_size];
+        // Rate in bytes/sec: manual override takes priority, otherwise
+        // auto-detected from the first valid MP3 frame header.
+        let mut rate: Option<u64> = self.max_rate_bps;
+        let mut rate_locked = rate.is_some();
 
         loop {
             tokio::select! {
@@ -67,6 +71,14 @@ impl IngestProtocol for IcecastIngest {
                             break;
                         }
                         Ok(n) => {
+                            if !rate_locked && codec == CodecId::MP3 {
+                                if let Some(bps) = rustyice_codec::mp3::scan_bitrate_bps(&buf[..n]) {
+                                    debug!("MP3 bitrate detected: {}kbps — pacing source", bps * 8 / 1000);
+                                    rate = Some(bps);
+                                    rate_locked = true;
+                                }
+                            }
+
                             stats.bytes_received += n as u64;
                             let data = Bytes::copy_from_slice(&buf[..n]);
                             let packet = Arc::new(StreamPacket {
@@ -80,9 +92,9 @@ impl IngestProtocol for IcecastIngest {
                             bus.publish(packet);
                             stats.packets_published += 1;
 
-                            if let Some(rate) = self.max_rate_bps {
+                            if let Some(bps) = rate {
                                 let target = Duration::from_secs_f64(
-                                    stats.bytes_received as f64 / rate as f64,
+                                    stats.bytes_received as f64 / bps as f64,
                                 );
                                 let elapsed = start.elapsed();
                                 if target > elapsed {

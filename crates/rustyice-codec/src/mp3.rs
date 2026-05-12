@@ -26,6 +26,26 @@ const MPEG1_L3_BITRATES: [Option<u32>; 16] = [
     None,        // 1111 bad
 ];
 
+/// Scan `data` for the first valid MPEG1 CBR Layer3 frame and return its
+/// bitrate in bytes/sec. Skips ID3 tags and garbage bytes automatically.
+/// Returns `None` for VBR streams (Xing header uses free-bitrate slot).
+#[must_use]
+pub fn scan_bitrate_bps(data: &[u8]) -> Option<u64> {
+    let codec = Mp3Codec;
+    let end = data.len().saturating_sub(3);
+    for i in 0..end {
+        if data[i] != 0xFF || (data[i + 1] & 0xE0) != 0xE0 {
+            continue;
+        }
+        if let Some(info) = codec.probe(&data[i..]) {
+            if let Some(kbps) = info.bitrate_kbps {
+                return Some(kbps as u64 * 1000 / 8);
+            }
+        }
+    }
+    None
+}
+
 impl Codec for Mp3Codec {
     fn codec_id(&self) -> CodecId {
         CodecId::MP3
@@ -162,6 +182,31 @@ mod tests {
     fn rejects_too_short_input() {
         let codec = Mp3Codec;
         assert!(codec.probe(&[0xFF, 0xFB]).is_none());
+    }
+
+    #[test]
+    fn scan_finds_bitrate_at_stream_start() {
+        // MPEG1 Layer3 128kbps 44100Hz — should detect 16000 B/s
+        let data = [0xFF, 0xFB, 0x90, 0x04, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(scan_bitrate_bps(&data), Some(128 * 1000 / 8));
+    }
+
+    #[test]
+    fn scan_finds_bitrate_after_garbage_prefix() {
+        let mut data = vec![0x00u8; 64];
+        data.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x04]);
+        assert_eq!(scan_bitrate_bps(&data), Some(128 * 1000 / 8));
+    }
+
+    #[test]
+    fn scan_returns_none_for_non_mp3_data() {
+        let data = vec![0x00u8; 64];
+        assert_eq!(scan_bitrate_bps(&data), None);
+    }
+
+    #[test]
+    fn scan_returns_none_for_short_input() {
+        assert_eq!(scan_bitrate_bps(&[0xFF, 0xFB]), None);
     }
 
     #[test]
