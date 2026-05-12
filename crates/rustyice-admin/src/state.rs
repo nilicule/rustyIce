@@ -27,6 +27,8 @@ impl ListenerMap {
         Arc::new(Self::default())
     }
 
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
     pub fn register(&self, mount_path: String, cancel: CancellationToken) -> ListenerId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.entries.write().unwrap().insert(
@@ -36,10 +38,14 @@ impl ListenerMap {
         id
     }
 
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
     pub fn deregister(&self, id: ListenerId) {
         self.entries.write().unwrap().remove(&id);
     }
 
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
     pub fn kick(&self, id: ListenerId) -> bool {
         if let Some(entry) = self.entries.read().unwrap().get(&id) {
             entry.cancel.cancel();
@@ -49,6 +55,8 @@ impl ListenerMap {
         }
     }
 
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
     pub fn ids_for_mount(&self, mount_path: &str) -> Vec<ListenerId> {
         self.entries
             .read()
@@ -59,6 +67,8 @@ impl ListenerMap {
             .collect()
     }
 
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
     pub fn total_count(&self) -> usize {
         self.entries.read().unwrap().len()
     }

@@ -21,6 +21,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[must_use]
     pub fn admin_state(
         &self,
         prometheus: metrics_exporter_prometheus::PrometheusHandle,

@@ -46,7 +46,7 @@ pub async fn watch_sighup(
 }
 
 async fn do_reload(
-    path: &PathBuf,
+    path: &std::path::Path,
     config: &Arc<ArcSwap<Config>>,
     auth: &Arc<dyn AuthBackend + Send + Sync>,
     mounts: &MountRegistry,

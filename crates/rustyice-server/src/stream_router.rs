@@ -68,7 +68,7 @@ async fn source_handler(
 
     let stream = body
         .into_data_stream()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+        .map_err(std::io::Error::other);
     let reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send + Unpin>> =
         Box::pin(StreamReader::new(stream));
 
@@ -104,16 +104,16 @@ async fn listener_handler(
     if global_count >= cfg.limits.max_listeners_global as usize {
         return (StatusCode::SERVICE_UNAVAILABLE, "server full").into_response();
     }
-    if let Some(max) = mount.info.load().max_listeners {
-        if mount.listener_count() >= max as usize {
-            return (StatusCode::SERVICE_UNAVAILABLE, "mount full").into_response();
-        }
+    if let Some(max) = mount.info.load().max_listeners
+        && mount.listener_count() >= max as usize
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, "mount full").into_response();
     }
 
     let icy_requested = headers
         .get("icy-metadata")
         .and_then(|v| v.to_str().ok())
-        .map_or(false, |v| v.trim() == "1");
+        .is_some_and(|v| v.trim() == "1");
 
     let mount_info = mount.info.load_full();
     let subscription = mount.bus.subscribe();

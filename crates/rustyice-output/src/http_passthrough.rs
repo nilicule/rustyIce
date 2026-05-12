@@ -120,7 +120,7 @@ fn build_icy_frame(info: &MountInfo) -> Vec<u8> {
     let blocks = raw.len().div_ceil(16);
     let padded = blocks * 16;
     let mut frame = Vec::with_capacity(1 + padded);
-    frame.push(blocks as u8);
+    frame.push(u8::try_from(blocks).unwrap_or(u8::MAX));
     frame.extend_from_slice(raw);
     frame.resize(1 + padded, 0);
     frame

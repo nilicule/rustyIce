@@ -38,6 +38,8 @@ pub struct ListenerList {
     pub listener_ids: Vec<u64>,
 }
 
+/// # Errors
+/// Returns `404 Not Found` if the mount does not exist.
 pub async fn list_listeners(
     State(state): State<AdminState>,
     Path(mount_path): Path<String>,

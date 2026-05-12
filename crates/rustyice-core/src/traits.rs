@@ -22,9 +22,15 @@ pub trait Codec: Send + Sync + 'static {
     fn probe(&self, header: &[u8]) -> Option<CodecInfo>;
 
     /// Decode one encoded packet to PCM.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if the packet is malformed or unsupported.
     fn decode(&self, packet: &EncodedPacket) -> Result<PcmFrame, CodecError>;
 
     /// Encode a PCM frame to this codec's format.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if encoding fails.
     fn encode(&self, frame: &PcmFrame, config: &EncodeConfig) -> Result<EncodedPacket, CodecError>;
 }
 
@@ -91,7 +97,7 @@ pub trait OutputProtocol: Send + Sync + 'static {
 /// Verifies credentials for admin access and per-mount source access.
 ///
 /// v1: bcrypt + TOML user table.
-/// v2: OIDC, WebAuthn, bearer tokens — all satisfy this interface.
+/// v2: OIDC, `WebAuthn`, bearer tokens — all satisfy this interface.
 #[async_trait]
 pub trait AuthBackend: Send + Sync + 'static {
     async fn verify_admin(&self, username: &str, password: &str) -> Result<bool, AuthError>;

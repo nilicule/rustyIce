@@ -78,7 +78,9 @@ pub struct TlsConfig {
 }
 
 /// Load and parse the config file at the given path.
-#[must_use = "config load result must be checked"]
+///
+/// # Errors
+/// Returns [`crate::error::ConfigError`] if the file cannot be read or parsed.
 pub fn load(path: &std::path::Path) -> Result<Config, crate::error::ConfigError> {
     let contents = std::fs::read_to_string(path)?;
     let config = toml::from_str(&contents)?;

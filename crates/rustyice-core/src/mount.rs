@@ -86,7 +86,7 @@ impl ActiveMount {
 /// Thread-safe registry of all active mount points.
 ///
 /// Uses `std::sync::RwLock` (not tokio's) because critical sections
-/// are brief HashMap operations with no await points.
+/// are brief `HashMap` operations with no await points.
 #[derive(Clone, Default)]
 pub struct MountRegistry {
     inner: Arc<RwLock<HashMap<String, Arc<ActiveMount>>>>,

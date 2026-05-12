@@ -2,6 +2,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Resolves on SIGTERM or Ctrl-C. Cancels `token` so all tasks drain cleanly.
+///
+/// # Panics
+/// Panics if the OS signal handler cannot be registered.
 pub async fn shutdown_signal(token: CancellationToken) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
