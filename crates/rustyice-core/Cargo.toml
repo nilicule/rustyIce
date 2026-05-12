@@ -12,6 +12,7 @@ async-trait.workspace  = true
 futures.workspace      = true
 arc-swap.workspace     = true
 tokio                  = { workspace = true, features = ["sync"] }
+tokio-util             = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
