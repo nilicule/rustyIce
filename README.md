@@ -7,6 +7,8 @@ A single-binary Icecast-compatible MP3 streaming server written in Rust.
 - Icecast2-compatible source ingest — both `SOURCE` and `PUT` methods
 - MP3 streaming with automatic bitrate detection and real-time playback pacing
 - Per-mount source passwords **and** an optional global default password for dynamic mounts
+- Public landing page listing active streams with one-click playback links
+- Password-gated admin dashboard with per-mount listener detail, kick-source and kick-listener controls
 - Admin REST API + Prometheus metrics endpoint
 - bcrypt-hashed admin credentials, plaintext per-stream source passwords
 - Hot-reload of config (mount metadata, auth credentials) via `SIGHUP` with no listener drops
