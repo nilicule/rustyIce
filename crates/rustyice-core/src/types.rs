@@ -15,6 +15,7 @@ impl CodecId {
     pub const AAC: Self    = Self("aac");
     pub const WAV: Self    = Self("wav");
 
+    #[must_use]
     pub fn as_str(&self) -> &'static str { self.0 }
 }
 
