@@ -7,6 +7,10 @@ edition.workspace = true
 name = "rustyice"
 path = "src/main.rs"
 
+[lib]
+name = "rustyice_server"
+path = "src/lib.rs"
+
 [dependencies]
 rustyice-core   = { path = "../rustyice-core" }
 rustyice-codec  = { path = "../rustyice-codec" }
@@ -28,3 +32,4 @@ metrics-exporter-prometheus.workspace = true
 arc-swap.workspace  = true
 bytes.workspace     = true
 futures.workspace   = true
+tokio-stream.workspace = true
