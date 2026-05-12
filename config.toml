@@ -8,6 +8,11 @@ level  = "debug"
 format = "pretty"
 
 [auth]
+# Optional: a global source password. Any source authenticating with it may
+# create a dynamic mount on a path not listed in [[mounts]] below. The mount
+# is removed automatically when the source disconnects.
+source_password = "letmesource"
+
 [[auth.users]]
 username        = "admin"
 # bcrypt of "adminpass" — regenerate: htpasswd -bnBC 12 "" adminpass | tr -d ':\n'

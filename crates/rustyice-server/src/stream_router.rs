@@ -1,3 +1,4 @@
+use crate::bus::TokioBroadcastBus;
 use crate::state::AppState;
 use axum::{
     body::Body,
@@ -10,7 +11,7 @@ use axum::{
 use futures::TryStreamExt;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rustyice_admin::ListenerMap;
-use rustyice_core::mount::ActiveMount;
+use rustyice_core::mount::{ActiveMount, MountInfo, MountMetadata, MountRegistry};
 use rustyice_core::types::CodecId;
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
@@ -33,20 +34,12 @@ async fn source_handler(
     body: Body,
 ) -> Response {
     let mount_path = format!("/{mount_segment}");
-
     let password = extract_source_password(&headers);
+    let codec = detect_codec_from_content_type(&headers);
 
-    match state.auth.verify_source(&mount_path, &password).await {
-        Ok(true) => {}
-        Ok(false) => return unauthorized("invalid source password"),
-        Err(e) => {
-            warn!("auth error for {mount_path}: {e}");
-            return server_error();
-        }
-    }
-
-    let Some(mount) = state.mounts.get(&mount_path) else {
-        return (StatusCode::NOT_FOUND, "mount not configured").into_response();
+    let (mount, dynamic) = match resolve_or_create_mount(&state, &mount_path, &password, codec.clone()).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
     };
 
     if mount
@@ -63,14 +56,18 @@ async fn source_handler(
     *mount.connected_at.lock().unwrap() = Some(Instant::now());
 
     // Runs cleanup even if the handler future is dropped mid-await (e.g. TCP reset).
+    // For dynamic mounts, the guard also removes the mount from the registry.
     let _guard = SourceDisconnectGuard {
         mount: mount.clone(),
         listeners: state.listeners.clone(),
         mount_path: mount_path.clone(),
+        mounts: dynamic.then(|| state.mounts.clone()),
     };
 
-    let codec = detect_codec_from_content_type(&headers);
-    info!("source connected: mount={mount_path} codec={codec}");
+    info!(
+        "source connected: mount={mount_path} codec={codec}{}",
+        if dynamic { " (dynamic)" } else { "" }
+    );
 
     let stream = body.into_data_stream().map_err(std::io::Error::other);
     let reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send + Unpin>> =
@@ -84,11 +81,66 @@ async fn source_handler(
     StatusCode::OK.into_response()
 }
 
-/// Cleans up source state when the handler completes or is dropped.
+/// Returns `(mount, dynamic)` on success, or a `Response` for the caller to
+/// return on failure. `dynamic` indicates whether the mount was just created.
+async fn resolve_or_create_mount(
+    state: &AppState,
+    mount_path: &str,
+    password: &str,
+    codec: CodecId,
+) -> Result<(Arc<ActiveMount>, bool), Response> {
+    if let Some(mount) = state.mounts.get(mount_path) {
+        return match state.auth.verify_source(mount_path, password).await {
+            Ok(true) => Ok((mount, false)),
+            Ok(false) => Err(unauthorized("invalid source password")),
+            Err(e) => {
+                warn!("auth error for {mount_path}: {e}");
+                Err(server_error())
+            }
+        };
+    }
+
+    match state.auth.verify_default_source(password).await {
+        Ok(true) => {
+            let mount = create_dynamic_mount(&state.mounts, mount_path, codec, &state.config);
+            Ok((mount, true))
+        }
+        Ok(false) => Err(unauthorized("invalid source password")),
+        Err(e) => {
+            warn!("auth error for {mount_path}: {e}");
+            Err(server_error())
+        }
+    }
+}
+
+fn create_dynamic_mount(
+    registry: &MountRegistry,
+    mount_path: &str,
+    codec: CodecId,
+    config: &arc_swap::ArcSwap<rustyice_core::config::Config>,
+) -> Arc<ActiveMount> {
+    let cfg = config.load();
+    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    let info = MountInfo {
+        path: mount_path.to_string(),
+        codec,
+        source_password: String::new(),
+        max_listeners: None,
+        metadata: MountMetadata::default(),
+    };
+    let mount = Arc::new(ActiveMount::new(info, bus));
+    registry.add(mount.clone());
+    mount
+}
+
+/// Cleans up source state when the handler completes or is dropped. When the
+/// mount was created dynamically by this handler, `mounts` is `Some` so the
+/// guard can also drop the mount from the registry on disconnect.
 struct SourceDisconnectGuard {
     mount: Arc<ActiveMount>,
     listeners: Arc<ListenerMap>,
     mount_path: String,
+    mounts: Option<MountRegistry>,
 }
 
 impl Drop for SourceDisconnectGuard {
@@ -99,7 +151,12 @@ impl Drop for SourceDisconnectGuard {
         self.mount.source_connected.store(false, Ordering::Release);
         *self.mount.source_cancel.lock().unwrap() = None;
         *self.mount.connected_at.lock().unwrap() = None;
-        info!("source disconnected: mount={}", self.mount_path);
+        if let Some(registry) = &self.mounts {
+            let _ = registry.remove(&self.mount_path);
+            info!("source disconnected: mount={} (dynamic mount removed)", self.mount_path);
+        } else {
+            info!("source disconnected: mount={}", self.mount_path);
+        }
     }
 }
 

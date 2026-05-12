@@ -11,6 +11,10 @@ pub struct TomlBcryptAuth {
     users: Arc<ArcSwap<HashMap<String, String>>>,
     /// mount path → plaintext source password. Hot-reloadable.
     mount_passwords: Arc<ArcSwap<HashMap<String, String>>>,
+    /// Optional global source password. When set, any source supplying it may
+    /// create a dynamic mount. Hot-reloadable. `None` when no `auth.source_password`
+    /// is configured — `verify_default_source` then rejects every attempt.
+    default_source_password: Arc<ArcSwap<Option<String>>>,
 }
 
 impl TomlBcryptAuth {
@@ -19,6 +23,9 @@ impl TomlBcryptAuth {
         Self {
             users: Arc::new(ArcSwap::from_pointee(user_map(config))),
             mount_passwords: Arc::new(ArcSwap::from_pointee(mount_map(config))),
+            default_source_password: Arc::new(ArcSwap::from_pointee(
+                config.auth.source_password.clone(),
+            )),
         }
     }
 }
@@ -60,9 +67,16 @@ impl AuthBackend for TomlBcryptAuth {
         Ok(passwords.get(mount_path).is_some_and(|p| p == password))
     }
 
+    async fn verify_default_source(&self, password: &str) -> Result<bool, AuthError> {
+        let configured = self.default_source_password.load();
+        Ok(configured.as_deref().is_some_and(|p| p == password))
+    }
+
     async fn reload(&self, config: &Config) -> Result<(), AuthError> {
         self.users.store(Arc::new(user_map(config)));
         self.mount_passwords.store(Arc::new(mount_map(config)));
+        self.default_source_password
+            .store(Arc::new(config.auth.source_password.clone()));
         Ok(())
     }
 }
@@ -91,6 +105,7 @@ mod tests {
                         password_bcrypt: h.to_string(),
                     })
                     .collect(),
+                source_password: None,
             },
             limits: LimitsConfig {
                 max_listeners_global: 500,
@@ -150,6 +165,41 @@ mod tests {
     async fn verify_source_unknown_mount() {
         let auth = TomlBcryptAuth::new(&make_config(&[], &[]));
         assert!(!auth.verify_source("/nothere", "anything").await.unwrap());
+    }
+
+    fn make_config_with_default_source(default_pw: Option<&str>) -> Config {
+        let mut cfg = make_config(&[], &[]);
+        cfg.auth.source_password = default_pw.map(str::to_string);
+        cfg
+    }
+
+    #[tokio::test]
+    async fn verify_default_source_rejects_when_unset() {
+        let auth = TomlBcryptAuth::new(&make_config(&[], &[]));
+        assert!(!auth.verify_default_source("anything").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn verify_default_source_accepts_match() {
+        let auth = TomlBcryptAuth::new(&make_config_with_default_source(Some("global")));
+        assert!(auth.verify_default_source("global").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn verify_default_source_rejects_mismatch() {
+        let auth = TomlBcryptAuth::new(&make_config_with_default_source(Some("global")));
+        assert!(!auth.verify_default_source("wrong").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reload_updates_default_source_password() {
+        let auth = TomlBcryptAuth::new(&make_config_with_default_source(Some("old")));
+        assert!(auth.verify_default_source("old").await.unwrap());
+        auth.reload(&make_config_with_default_source(Some("new")))
+            .await
+            .unwrap();
+        assert!(!auth.verify_default_source("old").await.unwrap());
+        assert!(auth.verify_default_source("new").await.unwrap());
     }
 
     #[tokio::test]

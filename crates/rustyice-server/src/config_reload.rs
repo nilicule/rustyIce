@@ -130,7 +130,7 @@ mod tests {
                 hostname: "localhost".to_string(),
             },
             logging: LoggingConfig { level: "info".to_string(), format: LogFormat::Json },
-            auth: AuthConfig { users: vec![] },
+            auth: AuthConfig { users: vec![], source_password: None },
             limits: LimitsConfig {
                 max_listeners_global: 500,
                 ring_size: 64,

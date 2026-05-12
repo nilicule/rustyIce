@@ -25,6 +25,12 @@ use tower::ServiceBuilder;
 const FAKE_MP3_FRAME: &[u8] = &[0xFF, 0xFB, 0x90, 0x04, 0x00, 0x00, 0x00, 0x00];
 
 async fn build_test_server() -> (u16, u16, CancellationToken) {
+    build_test_server_with(None).await
+}
+
+async fn build_test_server_with(
+    default_source_password: Option<&str>,
+) -> (u16, u16, CancellationToken) {
     let cfg = Config {
         server: ServerConfig {
             stream_bind: "127.0.0.1:0".parse().unwrap(),
@@ -32,7 +38,10 @@ async fn build_test_server() -> (u16, u16, CancellationToken) {
             hostname: "localhost".to_string(),
         },
         logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
-        auth: AuthConfig { users: vec![] },
+        auth: AuthConfig {
+            users: vec![],
+            source_password: default_source_password.map(str::to_string),
+        },
         limits: LimitsConfig {
             max_listeners_global: 100,
             ring_size: 64,
@@ -204,6 +213,82 @@ async fn source_with_wrong_password_gets_401() {
         .unwrap();
 
     assert_eq!(resp.status(), 401);
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn dynamic_mount_created_when_default_source_password_matches() {
+    // Server allows any source authenticating with "globalpw" to create new
+    // mounts that aren't pre-configured.
+    let (stream_port, _admin_port, shutdown) = build_test_server_with(Some("globalpw")).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let base = format!("http://127.0.0.1:{stream_port}");
+    let dyn_path = "/freshmount";
+
+    // No source yet → mount doesn't exist → listener gets 404.
+    let resp = reqwest::Client::new()
+        .get(format!("{base}{dyn_path}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // Wrong default password is rejected.
+    let resp = reqwest::Client::new()
+        .put(format!("{base}{dyn_path}"))
+        .header("Authorization", "Basic d3Jvbmc=") // base64("wrong")
+        .header("Content-Type", "audio/mpeg")
+        .body(vec![0u8; 32])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+
+    // Correct default password creates the mount; keep the source request
+    // alive so the mount stays around long enough for the listener to attach.
+    let source_url = format!("{base}{dyn_path}");
+    let audio: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(65_536).collect();
+    let source_handle = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&source_url)
+            .header("Authorization", "Basic Z2xvYmFscHc=") // base64("globalpw")
+            .header("Content-Type", "audio/mpeg")
+            .body(audio)
+            .send()
+            .await;
+    });
+
+    // Give the source a moment to register the mount.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut listener_resp = reqwest::Client::new()
+        .get(format!("{base}{dyn_path}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        listener_resp.status(),
+        200,
+        "listener should attach to dynamically-created mount"
+    );
+    let chunk = tokio::time::timeout(Duration::from_millis(500), listener_resp.chunk())
+        .await
+        .expect("timed out waiting for audio")
+        .expect("chunk error");
+    assert!(chunk.map_or(false, |b| !b.is_empty()));
+
+    // Once the source finishes and the disconnect guard runs, the dynamic
+    // mount is removed and new listeners get 404 again.
+    let _ = source_handle.await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{base}{dyn_path}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "dynamic mount should be removed after source disconnect");
+
     shutdown.cancel();
 }
 

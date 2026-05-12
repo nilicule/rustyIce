@@ -103,6 +103,13 @@ pub trait AuthBackend: Send + Sync + 'static {
     async fn verify_admin(&self, username: &str, password: &str) -> Result<bool, AuthError>;
     async fn verify_source(&self, mount_path: &str, password: &str) -> Result<bool, AuthError>;
 
+    /// Verifies the global default source password. Used to authenticate
+    /// sources that want to create a new mount not present in `[[mounts]]`.
+    /// Default implementation rejects all attempts (no default password set).
+    async fn verify_default_source(&self, _password: &str) -> Result<bool, AuthError> {
+        Ok(false)
+    }
+
     /// Called on SIGHUP. Re-read credentials from the backing store.
     async fn reload(&self, config: &crate::config::Config) -> Result<(), AuthError>;
 }

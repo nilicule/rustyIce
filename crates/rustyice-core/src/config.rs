@@ -37,6 +37,12 @@ pub struct LoggingConfig {
 pub struct AuthConfig {
     #[serde(default)]
     pub users: Vec<UserConfig>,
+    /// If set, any source authenticating with this password may create a new
+    /// mount on a path not present in `[[mounts]]`. The mount lives for the
+    /// duration of the source connection and is removed when the source
+    /// disconnects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_password: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
