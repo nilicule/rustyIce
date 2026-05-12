@@ -27,5 +27,4 @@ metrics.workspace              = true
 metrics-exporter-prometheus.workspace = true
 arc-swap.workspace  = true
 bytes.workspace     = true
-thiserror.workspace = true
 futures.workspace   = true

@@ -8,5 +8,5 @@ rustyice-core = { path = "../rustyice-core" }
 bcrypt.workspace      = true
 thiserror.workspace   = true
 async-trait.workspace = true
-tokio                 = { workspace = true, features = ["rt"] }
+tokio                 = { workspace = true, features = ["rt", "rt-multi-thread"] }
 arc-swap.workspace    = true
