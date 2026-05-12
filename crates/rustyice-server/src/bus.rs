@@ -5,7 +5,8 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
-use tokio_stream::{wrappers::BroadcastStream, Stream};
+use tokio_stream::{wrappers::{errors::BroadcastStreamRecvError, BroadcastStream}, Stream};
+use tracing::warn;
 
 /// Fan-out bus backed by `tokio::sync::broadcast` with a rolling history
 /// buffer. New subscribers receive recent packets first so they can fill their
@@ -19,6 +20,12 @@ pub struct TokioBroadcastBus {
     history: Mutex<VecDeque<Arc<StreamPacket>>>,
     history_cap: usize,
 }
+
+/// Cap on packets delivered as initial history to a new subscriber. Sized to
+/// fill a typical HTTP player's pre-play buffer (~1 s at 128 kbps with 4 KB
+/// chunks) and no more — delivering the full ring at network speed makes some
+/// players (notably VLC) misbehave on the burst-then-live transition.
+const HISTORY_SNAPSHOT_PACKETS: usize = 4;
 
 impl TokioBroadcastBus {
     /// `capacity` is both the broadcast ring size and the history ring size.
@@ -53,11 +60,20 @@ impl BroadcastBus for TokioBroadcastBus {
         // after is in the live stream.
         let hist = self.history.lock().unwrap();
         let receiver = self.sender.subscribe();
-        let history_snapshot: Vec<Arc<StreamPacket>> = hist.iter().cloned().collect();
+        let skip = hist.len().saturating_sub(HISTORY_SNAPSHOT_PACKETS);
+        let history_snapshot: Vec<Arc<StreamPacket>> =
+            hist.iter().skip(skip).cloned().collect();
         drop(hist);
 
-        let live = BroadcastStream::new(receiver)
-            .filter_map(|r| futures::future::ready(r.ok()));
+        let live = BroadcastStream::new(receiver).filter_map(|r| {
+            futures::future::ready(match r {
+                Ok(p) => Some(p),
+                Err(BroadcastStreamRecvError::Lagged(n)) => {
+                    warn!("subscriber lagged: missed {n} packets");
+                    None
+                }
+            })
+        });
         Box::pin(futures::stream::iter(history_snapshot).chain(live))
     }
 

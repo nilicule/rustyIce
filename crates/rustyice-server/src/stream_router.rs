@@ -149,9 +149,20 @@ async fn listener_handler(
     let cancel_clone = listener_cancel.clone();
 
     tokio::spawn(async move {
-        let _ = output
+        match output
             .run(writer, subscription, mount_info, icy_requested, cancel_clone)
-            .await;
+            .await
+        {
+            Ok(stats) => {
+                tracing::info!(
+                    "listener output ended: id={listener_id} bytes={} duration={:?} reason={:?}",
+                    stats.bytes_sent, stats.duration, stats.disconnect_reason,
+                );
+            }
+            Err(e) => {
+                tracing::warn!("listener output errored: id={listener_id} err={e}");
+            }
+        }
         listeners_ref.deregister(listener_id);
     });
 
