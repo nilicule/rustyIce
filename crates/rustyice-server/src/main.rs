@@ -70,8 +70,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listeners = ListenerMap::new();
     let shared_cfg = Arc::new(ArcSwap::from_pointee(cfg.clone()));
     let auth = Arc::new(TomlBcryptAuth::new(&cfg));
-    let ingest: Arc<dyn rustyice_core::traits::IngestProtocol + Send + Sync> =
-        Arc::new(IcecastIngest::default());
+    let ingest: Arc<dyn rustyice_core::traits::IngestProtocol + Send + Sync> = {
+        let mut i = IcecastIngest::default();
+        if let Some(kbps) = cfg.limits.source_max_kbps {
+            i = i.with_max_rate(kbps as u64 * 1000 / 8);
+        }
+        Arc::new(i)
+    };
     let output: Arc<dyn rustyice_core::traits::OutputProtocol + Send + Sync> =
         Arc::new(HttpPassthroughOutput::default());
 

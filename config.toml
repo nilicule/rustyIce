@@ -17,6 +17,9 @@ password_bcrypt = "$2b$12$Ei5EjJCSDDSfFPJU8jFoqeAJORGbHfwCU6nkdpkk5JFNB4W.LCrZS"
 max_listeners_global  = 500
 ring_size             = 64
 slow_listener_grace_s = 2
+# Uncomment to cap source ingest rate. Useful when pushing files with curl so
+# the connection stays open at real-time bitrate instead of uploading instantly.
+# source_max_kbps = 128
 
 [[mounts]]
 path            = "/stream"

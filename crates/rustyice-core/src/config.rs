@@ -50,6 +50,12 @@ pub struct LimitsConfig {
     pub max_listeners_global: u32,
     pub ring_size: usize,
     pub slow_listener_grace_s: u64,
+    /// Cap source ingestion rate (kbits/sec). Unset = unlimited.
+    /// Useful when pushing files: limits reads so TCP backpressure slows the
+    /// sender to real-time. Live source clients (Liquidsoap, Butt) send at
+    /// their own bitrate and are unaffected as long as they stay below the cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_max_kbps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

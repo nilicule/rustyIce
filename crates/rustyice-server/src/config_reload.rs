@@ -135,6 +135,7 @@ mod tests {
                 max_listeners_global: 500,
                 ring_size: 64,
                 slow_listener_grace_s: 2,
+                source_max_kbps: None,
             },
             mounts: vec![MountConfig {
                 path: "/stream".to_string(),

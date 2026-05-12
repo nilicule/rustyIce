@@ -5,19 +5,28 @@ use rustyice_core::traits::{BroadcastBus, IngestProtocol};
 use rustyice_core::types::{AudioPayload, CodecId, EncodedPacket, SourceStats, StreamPacket};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 pub struct IcecastIngest {
     chunk_size: usize,
+    /// If set, reads are paced to this rate. TCP backpressure slows the sender.
+    max_rate_bps: Option<u64>,
 }
 
 impl IcecastIngest {
     #[must_use]
     pub fn new(chunk_size: usize) -> Self {
-        Self { chunk_size }
+        Self { chunk_size, max_rate_bps: None }
+    }
+
+    /// Set a maximum ingestion rate (bytes/sec). Returns `self` for chaining.
+    #[must_use]
+    pub fn with_max_rate(mut self, bps: u64) -> Self {
+        self.max_rate_bps = Some(bps);
+        self
     }
 }
 
@@ -70,6 +79,23 @@ impl IngestProtocol for IcecastIngest {
                             });
                             bus.publish(packet);
                             stats.packets_published += 1;
+
+                            if let Some(rate) = self.max_rate_bps {
+                                let target = Duration::from_secs_f64(
+                                    stats.bytes_received as f64 / rate as f64,
+                                );
+                                let elapsed = start.elapsed();
+                                if target > elapsed {
+                                    tokio::select! {
+                                        biased;
+                                        () = cancellation.cancelled() => {
+                                            warn!("ingest cancelled during rate-limit sleep");
+                                            return Err(IngestError::Cancelled);
+                                        }
+                                        () = tokio::time::sleep(target - elapsed) => {}
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!("ingest I/O error: {e}");
