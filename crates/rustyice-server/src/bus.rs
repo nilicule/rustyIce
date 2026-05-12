@@ -33,10 +33,9 @@ impl BroadcastBus for TokioBroadcastBus {
 
     fn subscribe(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>> {
         let receiver = self.sender.subscribe();
-        // BroadcastStream yields Result<T, BroadcastStreamRecvError>.
-        // take_while(is_ok) terminates the stream on the first Lagged error.
+        // Skip Lagged errors rather than terminating — the listener stays connected
+        // and resumes from the next available packet (brief audio gap, not a disconnect).
         let stream = BroadcastStream::new(receiver)
-            .take_while(|r| futures::future::ready(r.is_ok()))
             .filter_map(|r| futures::future::ready(r.ok()));
         Box::pin(stream)
     }
@@ -106,18 +105,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lagged_subscriber_stream_terminates() {
+    async fn lagged_subscriber_skips_missed_packets_and_continues() {
         let bus = TokioBroadcastBus::new(2);
         let mut sub = bus.subscribe();
+        // Flood the ring (capacity 2) — subscriber will lag.
         bus.publish(make_packet(1));
         bus.publish(make_packet(2));
         bus.publish(make_packet(3));
         bus.publish(make_packet(4));
-        let result = tokio::time::timeout(Duration::from_millis(200), async {
-            while sub.next().await.is_some() {}
-        })
-        .await;
-        assert!(result.is_ok(), "stream must terminate on lag, not hang");
+        // After the lag the subscriber should still receive new packets.
+        bus.publish(make_packet(5));
+        let received = tokio::time::timeout(Duration::from_millis(200), sub.next())
+            .await
+            .expect("subscriber should continue after lag, not hang")
+            .expect("stream should not have ended");
+        // Sequence must be ≥ 3 (packets 1-2 were overwritten before we could read them).
+        assert!(received.sequence >= 3, "got seq={}", received.sequence);
     }
 
     #[tokio::test]
