@@ -90,7 +90,7 @@ main {
 .view-landing {
   max-width: 1080px;
   margin: 0 auto;
-  padding-top: 2rem;
+  padding-top: 3rem;
 }
 
 /* two-column layout below the status pill: intro on the left,
@@ -103,32 +103,6 @@ main {
   margin-bottom: 2.5rem;
 }
 
-/* status pill at the very top, spanning both columns */
-.landing-status {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 3rem;
-}
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: .55rem;
-  padding: .5rem 1rem;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  font-family: var(--mono);
-  font-size: .75rem;
-  letter-spacing: .16em;
-  color: var(--accent);
-}
-.status-dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
-  animation: pulse 1.6s ease-in-out infinite;
-}
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .5; transform: scale(.85); }

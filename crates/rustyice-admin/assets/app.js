@@ -90,9 +90,6 @@ async function refreshLanding() {
     $('stat-uptime').textContent = fmtUptime(stats.uptime_secs);
     $('streams-count').textContent = live.length;
     $('footer-version').textContent = `v${stats.version}`;
-    $('status-text').textContent = stats.total_mounts === 0
-      ? 'NO MOUNTS CONFIGURED'
-      : `SERVER ONLINE · ${live.length} LIVE`;
 
     const list = $('streams-list');
     if (live.length === 0) {
