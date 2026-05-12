@@ -10,3 +10,6 @@ thiserror.workspace   = true
 async-trait.workspace = true
 tokio                 = { workspace = true, features = ["rt", "rt-multi-thread"] }
 arc-swap.workspace    = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
