@@ -49,6 +49,9 @@ pub struct ActiveMount {
     /// Set when the source connects; cleared when it disconnects.
     pub connected_at: Mutex<Option<Instant>>,
     pub stats: Arc<MountStats>,
+    /// Cancellation token for the active source task.
+    /// Set to `Some` when a source connects; the admin API cancels it to kick the source.
+    pub source_cancel: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
 }
 
 impl ActiveMount {
@@ -59,6 +62,7 @@ impl ActiveMount {
             source_connected: AtomicBool::new(false),
             connected_at: Mutex::new(None),
             stats: Arc::new(MountStats::default()),
+            source_cancel: tokio::sync::Mutex::new(None),
         }
     }
 
