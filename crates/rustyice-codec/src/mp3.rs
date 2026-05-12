@@ -78,6 +78,7 @@ impl Codec for Mp3Codec {
     }
 }
 
+#[must_use]
 fn sample_rate(version: u8, index: u8) -> Option<u32> {
     match (version, index) {
         (0b11, 0b00) => Some(44_100),
