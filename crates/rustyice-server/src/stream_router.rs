@@ -147,7 +147,7 @@ async fn listener_handler(
         .header("icy-br", "128");
 
     if icy_requested {
-        builder = builder.header("icy-metaint", cfg.limits.ring_size.to_string());
+        builder = builder.header("icy-metaint", "8192");
     }
 
     builder
