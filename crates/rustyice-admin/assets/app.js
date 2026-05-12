@@ -88,11 +88,15 @@ async function refreshLanding() {
     $('stat-listeners').textContent = stats.total_listeners;
     $('stat-mounts').textContent = live.length;
     $('stat-uptime').textContent = fmtUptime(stats.uptime_secs);
+    $('streams-count').textContent = live.length;
     $('footer-version').textContent = `v${stats.version}`;
+    $('status-text').textContent = stats.total_mounts === 0
+      ? 'NO MOUNTS CONFIGURED'
+      : `SERVER ONLINE · ${live.length} LIVE`;
 
     const list = $('streams-list');
     if (live.length === 0) {
-      list.innerHTML = '<div class="streams-empty">NO ACTIVE STREAMS</div>';
+      list.innerHTML = '<div class="streams-empty">— no active streams —</div>';
       return;
     }
     list.innerHTML = live.map((m) => `

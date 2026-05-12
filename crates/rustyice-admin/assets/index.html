@@ -9,8 +9,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/">
-      <span class="brand-mark">Ri</span>
-      <span class="brand-text">RUSTYICE</span>
+      <span class="brand-text">rustyice</span>
     </a>
     <nav class="nav">
       <a id="nav-admin" href="#admin" class="nav-admin">ADMIN</a>
@@ -20,31 +19,36 @@
   <main>
     <!-- ============== Landing view ============== -->
     <section id="view-landing" class="view view-landing">
-      <div class="hero">
-        <div class="hero-text">
-          <p class="eyebrow"><span class="dash">—</span> AUDIO STREAMING SERVER</p>
-          <h1 class="title">
-            <span class="title-line muted">One binary.</span>
-            <span class="title-line">Pure <span class="accent">rust<span class="accent-dot">.</span></span></span>
-          </h1>
-          <p class="lede">
-            A lightweight Icecast-compatible audio streaming server written in Rust.
-            Single static binary, async runtime, hot-reloadable config.
+      <div class="landing-status">
+        <span id="status-pill" class="status-pill">
+          <span class="status-dot"></span>
+          <span id="status-text">SERVER ONLINE</span>
+        </span>
+      </div>
+
+      <div class="landing-grid">
+        <div class="landing-intro">
+          <h1 class="wordmark">rustyice<span class="wordmark-dot">.</span></h1>
+          <p class="tagline">
+            Icecast-compatible MP3 streaming. One binary, async runtime, hot-reload config.
           </p>
         </div>
 
-        <aside class="streams-panel">
-          <p class="panel-label">LIVE STREAMS</p>
-          <div id="streams-list" class="streams-list">
-            <div class="streams-empty">NO ACTIVE STREAMS</div>
+        <section class="streams-block">
+          <div class="block-head">
+            <span class="block-label">ACTIVE STREAMS</span>
+            <span id="streams-count" class="block-count">0</span>
           </div>
-        </aside>
+          <div id="streams-list" class="streams-list">
+            <div class="streams-empty">— no active streams —</div>
+          </div>
+        </section>
       </div>
 
-      <div class="stats">
-        <div class="stat"><span id="stat-listeners" class="stat-value">0</span><span class="stat-label">LISTENERS</span></div>
-        <div class="stat"><span id="stat-mounts" class="stat-value">0</span><span class="stat-label">ACTIVE MOUNTS</span></div>
-        <div class="stat"><span id="stat-uptime" class="stat-value">—</span><span class="stat-label">UPTIME</span></div>
+      <div class="stat-strip">
+        <span><strong id="stat-listeners">0</strong><span class="stat-sep">·</span>LISTENERS</span>
+        <span><strong id="stat-mounts">0</strong><span class="stat-sep">·</span>MOUNTS</span>
+        <span><strong id="stat-uptime">—</strong><span class="stat-sep">·</span>UPTIME</span>
       </div>
     </section>
 
