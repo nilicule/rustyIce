@@ -1,1 +1,19 @@
-<!DOCTYPE html><html><head><title>RustyIce Admin</title></head><body><h1>RustyIce Admin</h1></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RustyIce Admin</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <h1>RustyIce</h1>
+  <p>Uptime: <span id="uptime">…</span> | Listeners: <span id="listeners">…</span></p>
+  <table>
+    <thead>
+      <tr><th>Mount</th><th>Codec</th><th>Source</th><th>Listeners</th><th>Uptime</th><th></th></tr>
+    </thead>
+    <tbody id="mounts-body"></tbody>
+  </table>
+  <script src="/app.js"></script>
+</body>
+</html>

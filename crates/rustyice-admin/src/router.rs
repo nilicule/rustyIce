@@ -1,13 +1,48 @@
 use crate::api::{actions, mounts, stats};
 use crate::metrics::metrics_handler;
 use crate::state::AdminState;
+use axum::extract::Path;
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::{
     routing::{delete, get},
     Router,
 };
+use rust_embed::RustEmbed;
+
+#[derive(RustEmbed)]
+#[folder = "assets/"]
+struct Assets;
+
+async fn serve_asset(Path(path): Path<String>) -> impl IntoResponse {
+    match Assets::get(&path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(&path).first_or_octet_stream();
+            (
+                [(header::CONTENT_TYPE, mime.essence_str().to_string())],
+                content.data.to_vec(),
+            )
+                .into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn serve_index() -> impl IntoResponse {
+    match Assets::get("index.html") {
+        Some(content) => (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            content.data.to_vec(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
 
 pub fn build_admin_router(state: AdminState) -> Router {
     Router::new()
+        .route("/", get(serve_index))
+        .route("/{path}", get(serve_asset))
         .route("/api/mounts", get(mounts::list_mounts))
         .route("/api/mounts/{path}/listeners", get(mounts::list_listeners))
         .route("/api/mounts/{path}/source", delete(actions::kick_source))
