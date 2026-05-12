@@ -1,10 +1,64 @@
 use metrics_exporter_prometheus::PrometheusHandle;
 use rustyice_core::mount::MountRegistry;
+use rustyice_core::traits::AuthBackend;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+
+/// In-memory session store. Tokens expire after `ttl`; on every successful
+/// lookup the token is sliding-window refreshed.
+pub struct SessionStore {
+    sessions: RwLock<HashMap<String, SessionEntry>>,
+    ttl: Duration,
+}
+
+struct SessionEntry {
+    user: String,
+    expires_at: Instant,
+}
+
+impl SessionStore {
+    #[must_use]
+    pub fn new(ttl: Duration) -> Arc<Self> {
+        Arc::new(Self { sessions: RwLock::new(HashMap::new()), ttl })
+    }
+
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
+    pub fn create(&self, user: String) -> String {
+        let token = uuid::Uuid::new_v4().to_string();
+        let expires_at = Instant::now() + self.ttl;
+        self.sessions
+            .write()
+            .unwrap()
+            .insert(token.clone(), SessionEntry { user, expires_at });
+        token
+    }
+
+    /// Look up a token. Returns the associated user (and slides the expiry
+    /// forward) if valid, `None` if missing or expired.
+    ///
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
+    pub fn touch(&self, token: &str) -> Option<String> {
+        let mut sessions = self.sessions.write().unwrap();
+        let entry = sessions.get_mut(token)?;
+        if entry.expires_at < Instant::now() {
+            sessions.remove(token);
+            return None;
+        }
+        entry.expires_at = Instant::now() + self.ttl;
+        Some(entry.user.clone())
+    }
+
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
+    pub fn revoke(&self, token: &str) {
+        self.sessions.write().unwrap().remove(token);
+    }
+}
 
 pub type ListenerId = u64;
 
@@ -80,4 +134,7 @@ pub struct AdminState {
     pub listeners: Arc<ListenerMap>,
     pub prometheus: PrometheusHandle,
     pub start_time: Instant,
+    pub auth: Arc<dyn AuthBackend + Send + Sync>,
+    pub sessions: Arc<SessionStore>,
+    pub version: &'static str,
 }

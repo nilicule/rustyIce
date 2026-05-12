@@ -1,12 +1,12 @@
 use arc_swap::ArcSwap;
-use rustyice_admin::{AdminState, ListenerMap};
+use rustyice_admin::{AdminState, ListenerMap, SessionStore};
 use rustyice_core::{
     config::Config,
     mount::MountRegistry,
     traits::{AuthBackend, IngestProtocol, OutputProtocol},
 };
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -31,6 +31,9 @@ impl AppState {
             listeners: self.listeners.clone(),
             prometheus,
             start_time: Instant::now(),
+            auth: self.auth.clone(),
+            sessions: SessionStore::new(Duration::from_secs(24 * 60 * 60)),
+            version: env!("CARGO_PKG_VERSION"),
         }
     }
 }

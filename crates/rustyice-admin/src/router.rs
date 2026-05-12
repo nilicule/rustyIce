@@ -1,11 +1,12 @@
-use crate::api::{actions, mounts, stats};
+use crate::api::{actions, auth, mounts, stats};
 use crate::metrics::metrics_handler;
 use crate::state::AdminState;
 use axum::extract::Path;
 use axum::http::{header, StatusCode};
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::{
-    routing::{delete, get},
+    routing::{delete, get, post},
     Router,
 };
 use rust_embed::RustEmbed;
@@ -40,14 +41,28 @@ async fn serve_index() -> impl IntoResponse {
 }
 
 pub fn build_admin_router(state: AdminState) -> Router {
-    Router::new()
-        .route("/", get(serve_index))
-        .route("/{path}", get(serve_asset))
-        .route("/api/mounts", get(mounts::list_mounts))
+    // Admin-only routes: anything that exposes listener-level detail or mutates
+    // server state goes here.
+    let protected = Router::new()
         .route("/api/mounts/{path}/listeners", get(mounts::list_listeners))
         .route("/api/mounts/{path}/source", delete(actions::kick_source))
         .route("/api/listeners/{id}", delete(actions::kick_listener))
+        .route("/api/logout", post(auth::logout))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_session,
+        ));
+
+    // Public routes: landing page, static assets, read-only metadata, and the
+    // login endpoint itself.
+    let public = Router::new()
+        .route("/", get(serve_index))
+        .route("/{path}", get(serve_asset))
+        .route("/api/mounts", get(mounts::list_mounts))
         .route("/api/stats", get(stats::global_stats))
-        .route("/metrics", get(metrics_handler))
-        .with_state(state)
+        .route("/api/login", post(auth::login))
+        .route("/api/me", get(auth::me))
+        .route("/metrics", get(metrics_handler));
+
+    public.merge(protected).with_state(state)
 }

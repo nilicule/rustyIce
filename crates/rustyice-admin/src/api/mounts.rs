@@ -8,6 +8,7 @@ use serde::Serialize;
 pub struct MountStatus {
     pub path: String,
     pub codec: String,
+    pub name: Option<String>,
     pub source_connected: bool,
     pub listener_count: usize,
     pub source_uptime_secs: Option<u64>,
@@ -20,9 +21,11 @@ pub async fn list_mounts(State(state): State<AdminState>) -> Json<Vec<MountStatu
         .into_iter()
         .map(|m| {
             use std::sync::atomic::Ordering;
+            let info = m.info.load();
             MountStatus {
-                path: m.info.load().path.clone(),
-                codec: m.info.load().codec.as_str().to_string(),
+                path: info.path.clone(),
+                codec: info.codec.as_str().to_string(),
+                name: info.metadata.name.clone(),
                 source_connected: m.source_connected.load(Ordering::Relaxed),
                 listener_count: m.listener_count(),
                 source_uptime_secs: m.source_uptime().map(|d| d.as_secs()),

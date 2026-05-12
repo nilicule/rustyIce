@@ -6,4 +6,4 @@ pub mod router;
 pub mod state;
 
 pub use router::build_admin_router;
-pub use state::{AdminState, ListenerMap};
+pub use state::{AdminState, ListenerMap, SessionStore};

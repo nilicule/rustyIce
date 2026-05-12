@@ -8,6 +8,7 @@ pub struct GlobalStats {
     pub uptime_secs: u64,
     pub total_mounts: usize,
     pub total_listeners: usize,
+    pub version: &'static str,
 }
 
 pub async fn global_stats(State(state): State<AdminState>) -> Json<GlobalStats> {
@@ -15,5 +16,6 @@ pub async fn global_stats(State(state): State<AdminState>) -> Json<GlobalStats> 
         uptime_secs: state.start_time.elapsed().as_secs(),
         total_mounts: state.mounts.list().len(),
         total_listeners: state.listeners.total_count(),
+        version: state.version,
     })
 }

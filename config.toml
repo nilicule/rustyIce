@@ -16,7 +16,7 @@ source_password = "letmesource"
 [[auth.users]]
 username        = "admin"
 # bcrypt of "adminpass" — regenerate: htpasswd -bnBC 12 "" adminpass | tr -d ':\n'
-password_bcrypt = "$2b$12$Ei5EjJCSDDSfFPJU8jFoqeAJORGbHfwCU6nkdpkk5JFNB4W.LCrZS"
+password_bcrypt = "$2y$12$tWRporih5P9huFKMLo7ozO.9WvKgTRlQBFRlF8Y4AsGglyRY7qvr."
 
 [limits]
 max_listeners_global  = 500

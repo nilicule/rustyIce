@@ -1,7 +1,7 @@
 //! End-to-end test: source → bus → listener, with graceful shutdown.
 
 use arc_swap::ArcSwap;
-use rustyice_admin::{build_admin_router, AdminState, ListenerMap};
+use rustyice_admin::{build_admin_router, AdminState, ListenerMap, SessionStore};
 use rustyice_auth::TomlBcryptAuth;
 use rustyice_core::{
     config::{
@@ -88,7 +88,7 @@ async fn build_test_server_with(
 
     let app_state = AppState {
         mounts: mounts.clone(),
-        auth,
+        auth: auth.clone(),
         ingest,
         output,
         listeners: listeners.clone(),
@@ -104,6 +104,9 @@ async fn build_test_server_with(
         listeners,
         prometheus: prom_handle,
         start_time: std::time::Instant::now(),
+        auth,
+        sessions: SessionStore::new(std::time::Duration::from_secs(3600)),
+        version: env!("CARGO_PKG_VERSION"),
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -2,18 +2,103 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>RustyIce Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rustyIce</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <h1>RustyIce</h1>
-  <p>Uptime: <span id="uptime">…</span> | Listeners: <span id="listeners">…</span></p>
-  <table>
-    <thead>
-      <tr><th>Mount</th><th>Codec</th><th>Source</th><th>Listeners</th><th>Uptime</th><th></th></tr>
-    </thead>
-    <tbody id="mounts-body"></tbody>
-  </table>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark">Ri</span>
+      <span class="brand-text">RUSTYICE</span>
+    </a>
+    <nav class="nav">
+      <a id="nav-admin" href="#admin" class="nav-admin">ADMIN</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============== Landing view ============== -->
+    <section id="view-landing" class="view view-landing">
+      <div class="hero">
+        <div class="hero-text">
+          <p class="eyebrow"><span class="dash">—</span> AUDIO STREAMING SERVER</p>
+          <h1 class="title">
+            <span class="title-line muted">One binary.</span>
+            <span class="title-line">Pure <span class="accent">rust<span class="accent-dot">.</span></span></span>
+          </h1>
+          <p class="lede">
+            A lightweight Icecast-compatible audio streaming server written in Rust.
+            Single static binary, async runtime, hot-reloadable config.
+          </p>
+        </div>
+
+        <aside class="streams-panel">
+          <p class="panel-label">LIVE STREAMS</p>
+          <div id="streams-list" class="streams-list">
+            <div class="streams-empty">NO ACTIVE STREAMS</div>
+          </div>
+        </aside>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span id="stat-listeners" class="stat-value">0</span><span class="stat-label">LISTENERS</span></div>
+        <div class="stat"><span id="stat-mounts" class="stat-value">0</span><span class="stat-label">ACTIVE MOUNTS</span></div>
+        <div class="stat"><span id="stat-uptime" class="stat-value">—</span><span class="stat-label">UPTIME</span></div>
+      </div>
+    </section>
+
+    <!-- ============== Login view ============== -->
+    <section id="view-login" class="view hidden">
+      <div class="login-box">
+        <p class="eyebrow"><span class="dash">—</span> AUTHENTICATION REQUIRED</p>
+        <h2 class="login-title">Sign in</h2>
+        <form id="login-form" class="login-form" autocomplete="off">
+          <label>
+            <span>USERNAME</span>
+            <input type="text" id="login-user" required autofocus>
+          </label>
+          <label>
+            <span>PASSWORD</span>
+            <input type="password" id="login-pass" required>
+          </label>
+          <p id="login-error" class="error hidden"></p>
+          <div class="form-actions">
+            <a href="#" id="login-cancel" class="btn btn-ghost">CANCEL</a>
+            <button type="submit" class="btn btn-primary">SIGN IN</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============== Admin view ============== -->
+    <section id="view-admin" class="view hidden">
+      <div class="admin-header">
+        <div>
+          <p class="eyebrow"><span class="dash">—</span> OPERATOR CONSOLE</p>
+          <h2 class="admin-title">Admin</h2>
+        </div>
+        <div class="admin-user">
+          <span id="admin-user-label">signed in</span>
+          <a href="#" id="logout-btn" class="btn btn-ghost">SIGN OUT</a>
+        </div>
+      </div>
+
+      <div class="admin-stats">
+        <div class="stat"><span id="adm-stat-listeners" class="stat-value">0</span><span class="stat-label">LISTENERS</span></div>
+        <div class="stat"><span id="adm-stat-mounts" class="stat-value">0</span><span class="stat-label">ACTIVE MOUNTS</span></div>
+        <div class="stat"><span id="adm-stat-uptime" class="stat-value">—</span><span class="stat-label">UPTIME</span></div>
+      </div>
+
+      <div id="admin-mounts" class="admin-mounts"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>RUSTYICE // PURE RUST</span>
+    <span id="footer-version" class="footer-version">—</span>
+  </footer>
+
   <script src="/app.js"></script>
 </body>
 </html>
