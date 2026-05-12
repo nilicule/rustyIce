@@ -28,7 +28,7 @@ pub async fn kick_source(
             Json(ActionResult { success: false, message: "no source connected".into() }),
         );
     }
-    let guard = mount.source_cancel.lock().await;
+    let guard = mount.source_cancel.lock().unwrap();
     if let Some(token) = guard.as_ref() {
         token.cancel();
         (StatusCode::OK, Json(ActionResult { success: true, message: "source kicked".into() }))

@@ -9,11 +9,12 @@ use axum::{
 };
 use futures::TryStreamExt;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use rustyice_admin::ListenerMap;
+use rustyice_core::mount::ActiveMount;
 use rustyice_core::types::CodecId;
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
 use tokio_util::io::StreamReader;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub fn build_stream_router(state: AppState) -> Router {
@@ -56,34 +57,50 @@ async fn source_handler(
         return (StatusCode::CONFLICT, "mount already has an active source").into_response();
     }
 
-    let source_cancel = CancellationToken::new();
-    let effective_cancel = state.shutdown.child_token();
-
-    *mount.source_cancel.lock().await = Some(source_cancel.clone());
+    // Child of shutdown so the ingest stops on server shutdown OR admin kick.
+    let source_cancel = state.shutdown.child_token();
+    *mount.source_cancel.lock().unwrap() = Some(source_cancel.clone());
     *mount.connected_at.lock().unwrap() = Some(Instant::now());
 
-    let codec = detect_codec_from_content_type(&headers);
+    // Runs cleanup even if the handler future is dropped mid-await (e.g. TCP reset).
+    let _guard = SourceDisconnectGuard {
+        mount: mount.clone(),
+        listeners: state.listeners.clone(),
+        mount_path: mount_path.clone(),
+    };
 
+    let codec = detect_codec_from_content_type(&headers);
     info!("source connected: mount={mount_path} codec={codec}");
 
-    let stream = body
-        .into_data_stream()
-        .map_err(std::io::Error::other);
+    let stream = body.into_data_stream().map_err(std::io::Error::other);
     let reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send + Unpin>> =
         Box::pin(StreamReader::new(stream));
 
     let _ = state
         .ingest
-        .run(reader, mount.bus.clone(), codec, effective_cancel)
+        .run(reader, mount.bus.clone(), codec, source_cancel)
         .await;
 
-    mount.source_connected.store(false, Ordering::Release);
-    *mount.source_cancel.lock().await = None;
-    *mount.connected_at.lock().unwrap() = None;
-
-    info!("source disconnected: mount={mount_path}");
-
     StatusCode::OK.into_response()
+}
+
+/// Cleans up source state when the handler completes or is dropped.
+struct SourceDisconnectGuard {
+    mount: Arc<ActiveMount>,
+    listeners: Arc<ListenerMap>,
+    mount_path: String,
+}
+
+impl Drop for SourceDisconnectGuard {
+    fn drop(&mut self) {
+        for id in self.listeners.ids_for_mount(&self.mount_path) {
+            self.listeners.kick(id);
+        }
+        self.mount.source_connected.store(false, Ordering::Release);
+        *self.mount.source_cancel.lock().unwrap() = None;
+        *self.mount.connected_at.lock().unwrap() = None;
+        info!("source disconnected: mount={}", self.mount_path);
+    }
 }
 
 // ── Listener handler ───────────────────────────────────────────────────────

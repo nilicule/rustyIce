@@ -1,43 +1,64 @@
 use futures::StreamExt;
 use rustyice_core::traits::BroadcastBus;
 use rustyice_core::types::StreamPacket;
+use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, Stream};
 
-/// Fan-out bus backed by `tokio::sync::broadcast`.
-///
-/// On `RecvError::Lagged` the subscriber stream terminates so the output
-/// protocol can close the connection cleanly. Swap for a custom lock-free
-/// ring in v2 by replacing this struct; the `BroadcastBus` trait is unchanged.
+/// Fan-out bus backed by `tokio::sync::broadcast` with a rolling history
+/// buffer. New subscribers receive recent packets first so they can fill their
+/// playback buffer immediately instead of waiting for live data to trickle in
+/// at exactly playback speed.
 pub struct TokioBroadcastBus {
     sender: broadcast::Sender<Arc<StreamPacket>>,
+    /// Recent packets replayed to every new subscriber. Guarded by the same
+    /// lock used when creating a receiver so history and live stream are always
+    /// contiguous (no gap, no duplicate).
+    history: Mutex<VecDeque<Arc<StreamPacket>>>,
+    history_cap: usize,
 }
 
 impl TokioBroadcastBus {
-    /// `capacity` is the number of packets the ring can hold before the
-    /// oldest is overwritten. Maps to `limits.ring_size` in config.
+    /// `capacity` is both the broadcast ring size and the history ring size.
+    /// Maps to `limits.ring_size` in config.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
-        Self { sender }
+        Self {
+            sender,
+            history: Mutex::new(VecDeque::with_capacity(capacity)),
+            history_cap: capacity,
+        }
     }
 }
 
 impl BroadcastBus for TokioBroadcastBus {
     fn publish(&self, packet: Arc<StreamPacket>) {
-        // Err means no active receivers — that's fine, just drop the packet.
-        let _ = self.sender.send(packet);
+        // Hold the history lock while sending so that subscribe() cannot
+        // observe a state where the packet is in neither history nor live stream.
+        let mut hist = self.history.lock().unwrap();
+        let _ = self.sender.send(Arc::clone(&packet));
+        if hist.len() >= self.history_cap {
+            hist.pop_front();
+        }
+        hist.push_back(packet);
     }
 
     fn subscribe(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>> {
+        // Create the receiver under the history lock so the snapshot and the
+        // live subscription start at the same logical position: every packet
+        // that existed at this instant is in history; every packet published
+        // after is in the live stream.
+        let hist = self.history.lock().unwrap();
         let receiver = self.sender.subscribe();
-        // Skip Lagged errors rather than terminating — the listener stays connected
-        // and resumes from the next available packet (brief audio gap, not a disconnect).
-        let stream = BroadcastStream::new(receiver)
+        let history_snapshot: Vec<Arc<StreamPacket>> = hist.iter().cloned().collect();
+        drop(hist);
+
+        let live = BroadcastStream::new(receiver)
             .filter_map(|r| futures::future::ready(r.ok()));
-        Box::pin(stream)
+        Box::pin(futures::stream::iter(history_snapshot).chain(live))
     }
 
     fn subscriber_count(&self) -> usize {
@@ -132,5 +153,54 @@ mod tests {
         let received = tokio::time::timeout(Duration::from_millis(100), sub.next())
             .await.unwrap().unwrap();
         assert!(Arc::ptr_eq(&original, &received));
+    }
+
+    #[tokio::test]
+    async fn late_subscriber_receives_history() {
+        let bus = TokioBroadcastBus::new(16);
+        bus.publish(make_packet(1));
+        bus.publish(make_packet(2));
+        bus.publish(make_packet(3));
+        // Subscribe after the packets were already published.
+        let mut sub = bus.subscribe();
+        let p1 = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        let p2 = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        let p3 = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        assert_eq!(p1.sequence, 1);
+        assert_eq!(p2.sequence, 2);
+        assert_eq!(p3.sequence, 3);
+    }
+
+    #[tokio::test]
+    async fn history_and_live_are_contiguous_without_duplicates() {
+        // Packets published before subscribe go into history; the one published
+        // after goes into the live stream. Combined stream must yield all three
+        // exactly once in order.
+        let bus = TokioBroadcastBus::new(16);
+        bus.publish(make_packet(1));
+        bus.publish(make_packet(2));
+        let mut sub = bus.subscribe();
+        bus.publish(make_packet(3));
+        let seqs: Vec<u64> = vec![
+            tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap().sequence,
+            tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap().sequence,
+            tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap().sequence,
+        ];
+        assert_eq!(seqs, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn history_caps_at_capacity() {
+        let bus = TokioBroadcastBus::new(3);
+        for i in 1..=5 {
+            bus.publish(make_packet(i));
+        }
+        let mut sub = bus.subscribe();
+        let p1 = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        let p2 = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        let p3 = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        assert_eq!(p1.sequence, 3);
+        assert_eq!(p2.sequence, 4);
+        assert_eq!(p3.sequence, 5);
     }
 }
