@@ -1,0 +1,186 @@
+use rustyice_core::error::CodecError;
+use rustyice_core::traits::Codec;
+use rustyice_core::types::{CodecId, CodecInfo, EncodeConfig, EncodedPacket, PcmFrame};
+
+/// MPEG Audio Layer 3 codec — probe-only for v1.
+/// `decode` and `encode` return `CodecError::Unsupported`.
+pub struct Mp3Codec;
+
+// MPEG1 Layer3 bitrate table (kbps). Index 0 = free, 15 = bad.
+const MPEG1_L3_BITRATES: [Option<u32>; 16] = [
+    None,        // 0000 free
+    Some(32),    // 0001
+    Some(40),    // 0010
+    Some(48),    // 0011
+    Some(56),    // 0100
+    Some(64),    // 0101
+    Some(80),    // 0110
+    Some(96),    // 0111
+    Some(112),   // 1000
+    Some(128),   // 1001
+    Some(160),   // 1010
+    Some(192),   // 1011
+    Some(224),   // 1100
+    Some(256),   // 1101
+    Some(320),   // 1110
+    None,        // 1111 bad
+];
+
+impl Codec for Mp3Codec {
+    fn codec_id(&self) -> CodecId {
+        CodecId::MP3
+    }
+
+    fn probe(&self, header: &[u8]) -> Option<CodecInfo> {
+        if header.len() < 4 {
+            return None;
+        }
+
+        // Sync: byte 0 must be 0xFF; byte 1 high 3 bits must be 0b111.
+        if header[0] != 0xFF || (header[1] & 0xE0) != 0xE0 {
+            return None;
+        }
+
+        let version_bits = (header[1] >> 3) & 0x03;
+        let layer_bits   = (header[1] >> 1) & 0x03;
+
+        // Reserved MPEG version or reserved layer → not a valid frame.
+        if version_bits == 0b01 || layer_bits == 0b00 {
+            return None;
+        }
+
+        // This codec only handles Layer 3 (MP3).
+        if layer_bits != 0b01 {
+            return None;
+        }
+
+        let sr_index     = (header[2] >> 2) & 0x03;
+        let sample_rate  = sample_rate(version_bits, sr_index)?;
+
+        let bitrate_index = ((header[2] >> 4) & 0x0F) as usize;
+        let bitrate_kbps  = if version_bits == 0b11 {
+            MPEG1_L3_BITRATES[bitrate_index]
+        } else {
+            None // MPEG2/2.5 bitrate tables differ; skip for now
+        };
+
+        let channels = if (header[3] >> 6) == 0b11 { 1u8 } else { 2u8 };
+
+        Some(CodecInfo { id: CodecId::MP3, sample_rate, channels, bitrate_kbps })
+    }
+
+    fn decode(&self, _packet: &EncodedPacket) -> Result<PcmFrame, CodecError> {
+        Err(CodecError::Unsupported)
+    }
+
+    fn encode(&self, _frame: &PcmFrame, _config: &EncodeConfig) -> Result<EncodedPacket, CodecError> {
+        Err(CodecError::Unsupported)
+    }
+}
+
+fn sample_rate(version: u8, index: u8) -> Option<u32> {
+    match (version, index) {
+        (0b11, 0b00) => Some(44_100),
+        (0b11, 0b01) => Some(48_000),
+        (0b11, 0b10) => Some(32_000),
+        (0b10, 0b00) => Some(22_050),
+        (0b10, 0b01) => Some(24_000),
+        (0b10, 0b10) => Some(16_000),
+        (0b00, 0b00) => Some(11_025),
+        (0b00, 0b01) => Some(12_000),
+        (0b00, 0b10) => Some(8_000),
+        _ => None, // reserved (0b11 index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustyice_core::traits::Codec;
+
+    // MPEG1 Layer3 128kbps 44100Hz stereo, no CRC:
+    //   0xFF 0xFB 0x90 0x04
+    //   Byte1: 1111 1011 → sync(111) MPEG1(11) Layer3(01) NoCRC(1)
+    //   Byte2: 1001 0000 → bitrate(1001=128k) samplerate(00=44100) pad(0) priv(0)
+    //   Byte3: 0000 0100 → stereo(00) modeext(00) copy(0) orig(1) emph(00)
+    const MPEG1_L3_128K_44100_STEREO: [u8; 4] = [0xFF, 0xFB, 0x90, 0x04];
+
+    // MPEG1 Layer3 any bitrate 44100Hz mono:
+    //   Byte3: 1100 0000 → mono(11) modeext(00) copy(0) orig(0) emph(00)
+    const MPEG1_L3_44100_MONO: [u8; 4] = [0xFF, 0xFB, 0x90, 0xC0];
+
+    // MPEG1 Layer3 320kbps 48000Hz stereo:
+    //   Byte2: 1110 0100 → bitrate(1110=320k) samplerate(01=48000) pad(0) priv(0)
+    const MPEG1_L3_320K_48000_STEREO: [u8; 4] = [0xFF, 0xFB, 0xE4, 0x04];
+
+    // MPEG2 Layer3 (byte1 bit4-3 = 0b10):
+    //   Byte1: 1111 0011 → sync(111) MPEG2(10) Layer3(01) NoCRC(1)
+    const MPEG2_L3: [u8; 4] = [0xFF, 0xF3, 0x90, 0x04];
+
+    // Not an MP3 frame:
+    const NOT_MP3: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+
+    #[test]
+    fn probes_mpeg1_layer3_stereo() {
+        let codec = Mp3Codec;
+        let info = codec.probe(&MPEG1_L3_128K_44100_STEREO).unwrap();
+        assert_eq!(info.sample_rate, 44_100);
+        assert_eq!(info.channels, 2);
+        assert_eq!(info.bitrate_kbps, Some(128));
+    }
+
+    #[test]
+    fn probes_mpeg1_layer3_mono() {
+        let codec = Mp3Codec;
+        let info = codec.probe(&MPEG1_L3_44100_MONO).unwrap();
+        assert_eq!(info.channels, 1);
+    }
+
+    #[test]
+    fn probes_mpeg1_layer3_320k_48000() {
+        let codec = Mp3Codec;
+        let info = codec.probe(&MPEG1_L3_320K_48000_STEREO).unwrap();
+        assert_eq!(info.sample_rate, 48_000);
+        assert_eq!(info.bitrate_kbps, Some(320));
+    }
+
+    #[test]
+    fn probes_mpeg2_layer3_returns_some() {
+        // MPEG2 is valid MP3 data; we accept it but return None bitrate.
+        let codec = Mp3Codec;
+        assert!(codec.probe(&MPEG2_L3).is_some());
+    }
+
+    #[test]
+    fn rejects_non_mp3_bytes() {
+        let codec = Mp3Codec;
+        assert!(codec.probe(&NOT_MP3).is_none());
+    }
+
+    #[test]
+    fn rejects_too_short_input() {
+        let codec = Mp3Codec;
+        assert!(codec.probe(&[0xFF, 0xFB]).is_none());
+    }
+
+    #[test]
+    fn decode_returns_unsupported() {
+        use rustyice_core::error::CodecError;
+        use rustyice_core::types::EncodedPacket;
+        use bytes::Bytes;
+        use rustyice_core::types::CodecId;
+        let codec = Mp3Codec;
+        let packet = EncodedPacket { codec: CodecId::MP3, data: Bytes::new() };
+        assert!(matches!(codec.decode(&packet), Err(CodecError::Unsupported)));
+    }
+
+    #[test]
+    fn encode_returns_unsupported() {
+        use rustyice_core::error::CodecError;
+        use rustyice_core::types::{EncodeConfig, PcmFrame};
+        let codec = Mp3Codec;
+        let frame = PcmFrame { samples: vec![], sample_rate: 44_100, channels: 2 };
+        let cfg = EncodeConfig { sample_rate: 44_100, channels: 2, bitrate_kbps: 128 };
+        assert!(matches!(codec.encode(&frame, &cfg), Err(CodecError::Unsupported)));
+    }
+}
