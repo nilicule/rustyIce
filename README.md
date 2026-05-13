@@ -11,7 +11,7 @@ A single-binary Icecast-compatible MP3 streaming server written in Rust.
 - Public landing page with one-click playback
 - Admin dashboard + REST API — kick-source / kick-listener, per-mount listener detail, Prometheus `/metrics`
 - Hot-reload via `SIGHUP` — no listener drops
-- Single static binary, async (Tokio), single config file
+- Single static binary, async (Tokio), with an _optional_ config file (boots on sensible defaults with randomly-generated credentials when none is provided)
 
 ## Quickstart
 
@@ -29,12 +29,21 @@ cargo build --release
 
 ### Run
 
-Copy the example config and start the server:
+The simplest way — no config file, fresh random admin and source passwords printed to stdout on every start:
 
 ```sh
-cp config.toml my-config.toml
-./target/release/rustyice --config my-config.toml
+./target/release/rustyice
 ```
+
+To pin credentials and other settings, generate a config template, edit it, and pass it in:
+
+```sh
+./target/release/rustyice --print-config > config.toml
+# edit config.toml
+./target/release/rustyice --config config.toml
+```
+
+If `config.toml` exists in the current directory, it's picked up automatically — no flag needed. Configuration precedence: `--config <path>` > `./config.toml` > built-in defaults with random credentials.
 
 The server binds two ports:
 

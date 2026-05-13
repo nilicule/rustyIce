@@ -120,7 +120,15 @@ pub struct TlsConfig {
 /// Returns [`crate::error::ConfigError`] if the file cannot be read or parsed.
 pub fn load(path: &std::path::Path) -> Result<Config, crate::error::ConfigError> {
     let contents = std::fs::read_to_string(path)?;
-    let config = toml::from_str(&contents)?;
+    parse_str(&contents)
+}
+
+/// Parse a TOML config from a string.
+///
+/// # Errors
+/// Returns [`crate::error::ConfigError`] if the TOML cannot be parsed.
+pub fn parse_str(toml_text: &str) -> Result<Config, crate::error::ConfigError> {
+    let config = toml::from_str(toml_text)?;
     Ok(config)
 }
 

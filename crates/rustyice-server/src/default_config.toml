@@ -1,0 +1,32 @@
+[server]
+stream_bind = "0.0.0.0:8000"
+admin_bind  = "127.0.0.1:8001"
+hostname    = "localhost"
+
+[logging]
+level  = "info"
+format = "pretty"
+
+[auth]
+# Optional: a global source password. Any source authenticating with it may
+# create a dynamic mount on a path not listed in [[mounts]] below. The mount
+# is removed automatically when the source disconnects.
+source_password = "letmesource"
+
+[[auth.users]]
+username        = "admin"
+# bcrypt of "adminpass" — regenerate: htpasswd -bnBC 12 "" adminpass | tr -d ':\n'
+password_bcrypt = "$2y$12$tWRporih5P9huFKMLo7ozO.9WvKgTRlQBFRlF8Y4AsGglyRY7qvr."
+
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+
+[limits]
+max_listeners_global  = 500
+ring_size             = 64
+slow_listener_grace_s = 2
+# Uncomment to cap source ingest rate. Useful when pushing files with curl so
+# the connection stays open at real-time bitrate instead of uploading instantly.
+# source_max_kbps = 128

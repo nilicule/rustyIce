@@ -25,18 +25,28 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tracing::info;
 
+const DEFAULT_CONFIG_TOML: &str = include_str!("default_config.toml");
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|a| a == "--print-config") {
+        print!("{DEFAULT_CONFIG_TOML}");
+        return Ok(());
+    }
+
     print_banner();
 
-    let config_path = parse_config_arg().unwrap_or_else(|| PathBuf::from("config.toml"));
-    let cfg = config::load(&config_path)?;
+    let (cfg, config_source) = load_or_default_config()?;
 
     setup_tracing(&cfg);
 
+    let config_label: std::borrow::Cow<'_, str> = match &config_source {
+        ConfigSource::File(path) => path.display().to_string().into(),
+        ConfigSource::Defaults => "built-in defaults".into(),
+    };
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        config  = %config_path.display(),
+        config  = %config_label,
         "rustyice starting"
     );
 
@@ -107,8 +117,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let admin_router = build_admin_router(admin_state);
 
     // ── Spawn SIGHUP watcher ────────────────────────────────────────────────
-    let sighup_shutdown = shutdown.clone();
-    tokio::spawn(watch_sighup(config_path, shared_cfg, auth, mounts, sighup_shutdown));
+    // Only meaningful when a real config file backs the running config —
+    // there's nothing to reload from when running on built-in defaults.
+    if let ConfigSource::File(config_path) = &config_source {
+        let sighup_shutdown = shutdown.clone();
+        tokio::spawn(watch_sighup(
+            config_path.clone(),
+            shared_cfg,
+            auth,
+            mounts,
+            sighup_shutdown,
+        ));
+    }
 
     // ── Spawn admin server ──────────────────────────────────────────────────
     let admin_shutdown = shutdown.clone();
@@ -141,6 +161,99 @@ fn parse_config_arg() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
     let pos = args.iter().position(|a| a == "--config")?;
     args.get(pos + 1).map(PathBuf::from)
+}
+
+enum ConfigSource {
+    File(PathBuf),
+    Defaults,
+}
+
+struct GeneratedCreds {
+    admin_user: String,
+    admin_pass: String,
+    source_pass: String,
+}
+
+/// Resolve the running config: explicit `--config <path>` wins; otherwise we
+/// try `config.toml` next to the binary; otherwise we fall back to compiled-in
+/// defaults with **freshly generated** admin and source passwords (announced
+/// on the console).
+fn load_or_default_config() -> Result<(Config, ConfigSource), Box<dyn std::error::Error>> {
+    if let Some(path) = parse_config_arg() {
+        return Ok((config::load(&path)?, ConfigSource::File(path)));
+    }
+    let default_path = PathBuf::from("config.toml");
+    if default_path.exists() {
+        return Ok((config::load(&default_path)?, ConfigSource::File(default_path)));
+    }
+    let mut cfg = config::parse_str(DEFAULT_CONFIG_TOML)?;
+    let admin_pass = random_password(20)?;
+    let source_pass = random_password(20)?;
+    cfg.auth.source_password = Some(source_pass.clone());
+    let admin_user = cfg
+        .auth
+        .users
+        .first()
+        .map_or_else(|| "admin".to_string(), |u| u.username.clone());
+    let admin_bcrypt = bcrypt::hash(&admin_pass, bcrypt::DEFAULT_COST)?;
+    if let Some(user) = cfg.auth.users.first_mut() {
+        user.password_bcrypt = admin_bcrypt;
+    }
+    print_defaults_notice(&GeneratedCreds {
+        admin_user,
+        admin_pass,
+        source_pass,
+    });
+    Ok((cfg, ConfigSource::Defaults))
+}
+
+/// Generate a `len`-character password using `/dev/urandom` and a 62-char
+/// alphanumeric set. The modulo bias is tiny (256 / 62 → 8 of 62 chars are
+/// ~6% over-represented) and irrelevant for ~119-bit dev defaults.
+fn random_password(len: usize) -> std::io::Result<String> {
+    use std::io::Read;
+    const CHARSET: &[u8] =
+        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut buf = vec![0u8; len];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    Ok(buf
+        .iter()
+        .map(|b| CHARSET[*b as usize % CHARSET.len()] as char)
+        .collect())
+}
+
+/// Notify the user that no config was found and show the randomly-generated
+/// credentials that will be in effect for this run. Always prints (even on
+/// non-TTY) — losing these passwords means losing admin access, so the user
+/// needs to see them whether stdout is a terminal or a log collector.
+fn print_defaults_notice(creds: &GeneratedCreds) {
+    use std::io::IsTerminal;
+    let tty = std::io::stdout().is_terminal();
+    let (yellow, red, dim, reset) = if tty && std::env::var_os("NO_COLOR").is_none() {
+        (
+            "\x1b[38;2;233;196;106m",
+            "\x1b[38;2;231;111;81m",
+            "\x1b[2m",
+            "\x1b[0m",
+        )
+    } else {
+        ("", "", "", "")
+    };
+    let GeneratedCreds {
+        admin_user,
+        admin_pass,
+        source_pass,
+    } = creds;
+    println!(
+        "{yellow}no --config supplied and no config.toml in cwd \
+         — starting with built-in defaults and fresh random credentials.{reset}\n\
+         {red}credentials valid for this run only (regenerated on every start):{reset}\n\
+         {yellow}  admin user:      {reset}{admin_user}\n\
+         {yellow}  admin password:  {reset}{admin_pass}\n\
+         {yellow}  source password: {reset}{source_pass}\n\n\
+         {dim}to pin credentials, write the template to a file and edit:\n  \
+         rustyice --print-config > config.toml{reset}\n"
+    );
 }
 
 const BANNER_ART: &str = "\
