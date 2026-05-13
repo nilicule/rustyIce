@@ -11,8 +11,11 @@ use axum::{
 use futures::TryStreamExt;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rustyice_admin::ListenerMap;
+use rustyice_core::error::IngestError;
 use rustyice_core::mount::{ActiveMount, MountInfo, MountMetadata, MountRegistry};
+use rustyice_core::traits::IngestProtocol;
 use rustyice_core::types::CodecId;
+use rustyice_ingest::IcecastIngest;
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
 use tokio_util::io::StreamReader;
@@ -73,12 +76,16 @@ async fn source_handler(
     let reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send + Unpin>> =
         Box::pin(StreamReader::new(stream));
 
-    let _ = state
-        .ingest
-        .run(reader, mount.bus.clone(), codec, source_cancel)
-        .await;
+    let ingest = build_ingest_for_mount(&state, &mount_path);
 
-    StatusCode::OK.into_response()
+    let result = ingest.run(reader, mount.bus.clone(), codec, source_cancel).await;
+    match result {
+        Err(IngestError::TranscodeInit(e)) => {
+            warn!("transcode init failed for {mount_path}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        _ => StatusCode::OK.into_response(),
+    }
 }
 
 /// Returns `(mount, dynamic)` on success, or a `Response` for the caller to
@@ -131,6 +138,26 @@ fn create_dynamic_mount(
     let mount = Arc::new(ActiveMount::new(info, bus));
     registry.add(mount.clone());
     mount
+}
+
+fn build_ingest_for_mount(state: &AppState, mount_path: &str) -> IcecastIngest {
+    let cfg = state.config.load();
+
+    let transcode = if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
+        cfg.effective_transcode(mc).cloned()
+    } else {
+        cfg.transcode.clone()
+    };
+
+    let mut ingest = IcecastIngest::default();
+
+    if let Some(kbps) = cfg.limits.source_max_kbps {
+        ingest = ingest.with_max_rate(kbps as u64 * 1000 / 8);
+    }
+    if let Some(tc) = transcode {
+        ingest = ingest.with_transcode(tc);
+    }
+    ingest
 }
 
 /// Cleans up source state when the handler completes or is dropped. When the
