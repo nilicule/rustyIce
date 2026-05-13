@@ -63,12 +63,31 @@ impl PcmResampler {
 
     /// Flush rubato's internal FIR delay at end of stream.
     pub fn flush(&mut self) -> Result<Vec<f32>, TranscodeError> {
+        let mut output_interleaved = Vec::new();
+
+        // Process any sub-chunk leftover samples first
+        if !self.leftover.is_empty() && !self.leftover[0].is_empty() {
+            let partial: Vec<Vec<f32>> = self.leftover.iter().map(|ch| ch.clone()).collect();
+            let chunk_out = self
+                .inner
+                .process_partial(Some(partial.as_slice()), None)
+                .map_err(|e| TranscodeError::Resample(e.to_string()))?;
+            let out_len = chunk_out[0].len();
+            for i in 0..out_len {
+                for ch in &chunk_out {
+                    output_interleaved.push(ch[i]);
+                }
+            }
+            for ch in self.leftover.iter_mut() {
+                ch.clear();
+            }
+        }
+
+        // Drain FIR delay
         let chunk_out = self
             .inner
             .process_partial(None::<&[Vec<f32>]>, None)
             .map_err(|e| TranscodeError::Resample(e.to_string()))?;
-
-        let mut output_interleaved = Vec::new();
         if !chunk_out.is_empty() {
             let out_len = chunk_out[0].len();
             for i in 0..out_len {
@@ -77,6 +96,7 @@ impl PcmResampler {
                 }
             }
         }
+
         Ok(output_interleaved)
     }
 }
