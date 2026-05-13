@@ -7,6 +7,25 @@ use rustyice_core::types::{CodecId, CodecInfo, EncodeConfig, EncodedPacket, PcmF
 pub struct Mp3Codec;
 
 // MPEG1 Layer3 bitrate table (kbps). Index 0 = free, 15 = bad.
+const MPEG2_L3_BITRATES: [Option<u32>; 16] = [
+    None,        // 0000 free
+    Some(8),     // 0001
+    Some(16),    // 0010
+    Some(24),    // 0011
+    Some(32),    // 0100
+    Some(40),    // 0101
+    Some(48),    // 0110
+    Some(56),    // 0111
+    Some(64),    // 1000
+    Some(80),    // 1001
+    Some(96),    // 1010
+    Some(112),   // 1011
+    Some(128),   // 1100
+    Some(144),   // 1101
+    Some(160),   // 1110
+    None,        // 1111 bad
+];
+
 const MPEG1_L3_BITRATES: [Option<u32>; 16] = [
     None,        // 0000 free
     Some(32),    // 0001
@@ -44,6 +63,51 @@ pub fn scan_bitrate_bps(data: &[u8]) -> Option<u64> {
         }
     }
     None
+}
+
+/// Returns the total byte length of the MPEG Layer-3 frame whose header begins
+/// at the start of `header`.  Returns `None` if the header is too short, has an
+/// invalid sync word, uses a free/reserved bitrate, or is not a Layer-3 frame.
+///
+/// This is used by `StreamDecoder` to identify complete-frame boundaries before
+/// handing data to Symphonia, so that `WouldBlock` from the pipe source never
+/// fires mid-frame (which would cause the format reader to resync and skip frames).
+#[must_use]
+pub fn mp3_frame_size(header: &[u8]) -> Option<usize> {
+    if header.len() < 4 {
+        return None;
+    }
+    if header[0] != 0xFF || (header[1] & 0xE0) != 0xE0 {
+        return None;
+    }
+
+    let version_bits = (header[1] >> 3) & 0x03;
+    let layer_bits   = (header[1] >> 1) & 0x03;
+
+    // Reserved MPEG version, reserved layer, or not Layer 3.
+    if version_bits == 0b01 || layer_bits == 0b00 || layer_bits != 0b01 {
+        return None;
+    }
+
+    let sr_index = (header[2] >> 2) & 0x03;
+    let sr = sample_rate(version_bits, sr_index)? as usize;
+
+    let br_index = ((header[2] >> 4) & 0x0F) as usize;
+    let mpeg1 = version_bits == 0b11;
+
+    let br_kbps = if mpeg1 {
+        MPEG1_L3_BITRATES[br_index]?
+    } else {
+        MPEG2_L3_BITRATES[br_index]?
+    } as usize;
+
+    let padding = ((header[2] >> 1) & 0x01) as usize;
+
+    Some(if mpeg1 {
+        144 * br_kbps * 1000 / sr + padding
+    } else {
+        72 * br_kbps * 1000 / sr + padding
+    })
 }
 
 /// If `data` starts with an MP3 frame carrying a Xing/Info/VBRI tag, return the

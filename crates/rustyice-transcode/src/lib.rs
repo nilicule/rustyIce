@@ -4,6 +4,7 @@ mod error;
 mod pipeline;
 mod resampler;
 
+pub use decoder::StreamDecoder;
 pub use encoder::LameEncoder;
 pub use error::TranscodeError;
 pub use pipeline::TranscodePipeline;

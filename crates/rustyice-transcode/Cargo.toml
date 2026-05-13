@@ -5,9 +5,13 @@ edition.workspace = true
 
 [dependencies]
 rustyice-core  = { path = "../rustyice-core" }
+rustyice-codec = { path = "../rustyice-codec" }
 symphonia      = { workspace = true }
 rubato         = { workspace = true }
 mp3lame-sys    = { workspace = true }
 bytes          = { workspace = true }
 thiserror      = { workspace = true }
 tracing        = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

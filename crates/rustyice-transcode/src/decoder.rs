@@ -13,9 +13,6 @@ use symphonia::core::{
 use crate::TranscodeError;
 
 /// Minimum bytes to accumulate before attempting format probe.
-/// Keeping this at 2× the typical chunk size (4 096 B) so symphonia has at
-/// least two chunks of source data in its MSS buffer before the first decode,
-/// reducing the chance of a WouldBlock mid-frame on the very first pass.
 const INIT_THRESHOLD: usize = 8_192;
 
 struct PipeBuf {
@@ -62,12 +59,16 @@ struct DecoderInner {
     channels: u8,
 }
 
-/// A persistent MP3 decoder. Feed bytes in with `push()`; the internal symphonia
-/// decoder is kept alive across calls so the bit reservoir is never lost.
 pub struct StreamDecoder {
     buf: Arc<Mutex<PipeBuf>>,
     /// Accumulates bytes before we have enough data to probe the format.
     pending: Vec<u8>,
+    /// Accumulates post-init bytes until at least one complete frame is available.
+    /// Only complete frames are forwarded to `buf` so that Symphonia's format
+    /// reader never receives a `WouldBlock` mid-frame.  A mid-frame WouldBlock
+    /// causes the MpegReader to resync from an arbitrary offset, skipping frames
+    /// and producing pervasive audio corruption.
+    frame_staging: Vec<u8>,
     inner: Option<DecoderInner>,
 }
 
@@ -76,12 +77,13 @@ impl StreamDecoder {
         Self {
             buf: Arc::new(Mutex::new(PipeBuf { data: VecDeque::new(), eof: false })),
             pending: Vec::new(),
+            frame_staging: Vec::new(),
             inner: None,
         }
     }
 
     /// Push raw bytes from the source. Returns (interleaved_f32, sample_rate, channels).
-    /// Returns empty samples if not enough data has been received to probe yet.
+    /// Returns empty samples if not enough data has been received to decode yet.
     pub fn push(&mut self, data: &[u8]) -> Result<(Vec<f32>, u32, u8), TranscodeError> {
         if data.is_empty() {
             return Ok((vec![], 0, 0));
@@ -92,11 +94,9 @@ impl StreamDecoder {
             if self.pending.len() < INIT_THRESHOLD {
                 return Ok((vec![], 0, 0));
             }
-            // Drain pending into the shared pipe buffer, then attempt to probe.
             let pending = std::mem::take(&mut self.pending);
             self.buf.lock().unwrap().data.extend(pending);
             if let Err(e) = self.try_init() {
-                // Bad data — clear the buffer and wait for valid MP3.
                 tracing::debug!("decoder init failed, discarding buffer: {e}");
                 self.buf.lock().unwrap().data.clear();
                 return Ok((vec![], 0, 0));
@@ -105,7 +105,8 @@ impl StreamDecoder {
             // Return empty until fresh data arrives on the next push.
             return Ok((vec![], 0, 0));
         } else {
-            self.buf.lock().unwrap().data.extend(data.iter().copied());
+            self.frame_staging.extend_from_slice(data);
+            self.stage_complete_frames_to_pipe();
         }
 
         self.drain_packets()
@@ -116,16 +117,56 @@ impl StreamDecoder {
         if self.inner.is_none() && !self.pending.is_empty() {
             let pending = std::mem::take(&mut self.pending);
             self.buf.lock().unwrap().data.extend(pending);
-            // Best-effort init with whatever data we have.
             let _ = self.try_init();
         }
-        // Tell PipeSource to return 0 (EOF) instead of WouldBlock when empty.
+
+        // Flush any remaining staged bytes unconditionally — partial frames are
+        // acceptable at end of stream and Symphonia handles them gracefully with
+        // eof=true (it will stop at the last decodable frame).
+        if !self.frame_staging.is_empty() {
+            let staged = std::mem::take(&mut self.frame_staging);
+            self.buf.lock().unwrap().data.extend(staged);
+        }
+
         self.buf.lock().unwrap().eof = true;
 
         if self.inner.is_none() {
             return Ok((vec![], 0, 0));
         }
         self.drain_packets()
+    }
+
+    /// Scan `frame_staging` for complete MP3 frames and move all bytes up to
+    /// (and including) the last complete frame into `buf`.  Any trailing partial
+    /// frame is left in `frame_staging` for the next push.
+    ///
+    /// Any bytes before the first detected sync word are included in the flush —
+    /// they are the continuation of a frame that was partially present in the
+    /// init buffer and must reach Symphonia in order.
+    fn stage_complete_frames_to_pipe(&mut self) {
+        let data = &self.frame_staging;
+        let mut pos = 0usize;
+        let mut last_complete_end = 0usize;
+
+        while pos + 4 <= data.len() {
+            if data[pos] != 0xFF || (data[pos + 1] & 0xE0) != 0xE0 {
+                pos += 1;
+                continue;
+            }
+            match rustyice_codec::mp3_frame_size(&data[pos..]) {
+                Some(size) if pos + size <= data.len() => {
+                    last_complete_end = pos + size;
+                    pos = last_complete_end;
+                }
+                Some(_) => break, // frame starts here but is incomplete; wait for more data
+                None => { pos += 1; } // false sync word; advance
+            }
+        }
+
+        if last_complete_end > 0 {
+            let frames: Vec<u8> = self.frame_staging.drain(..last_complete_end).collect();
+            self.buf.lock().unwrap().data.extend(frames);
+        }
     }
 
     fn try_init(&mut self) -> Result<(), TranscodeError> {

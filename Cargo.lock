@@ -1655,10 +1655,12 @@ dependencies = [
  "bytes",
  "mp3lame-sys",
  "rubato",
+ "rustyice-codec",
  "rustyice-core",
  "symphonia",
  "thiserror 2.0.18",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

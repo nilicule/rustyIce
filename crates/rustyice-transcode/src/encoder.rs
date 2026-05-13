@@ -3,6 +3,7 @@ use crate::TranscodeError;
 pub struct LameEncoder {
     gfp: *mut mp3lame_sys::lame_global_flags,
     channels: u8,
+    chunk_counter: u64,
 }
 
 // SAFETY: lame_global_flags is not thread-safe by itself; we never share it.
@@ -32,7 +33,7 @@ impl LameEncoder {
                     "lame_init_params returned {ret}"
                 )));
             }
-            Ok(Self { gfp, channels })
+            Ok(Self { gfp, channels, chunk_counter: 0 })
         }
     }
 
@@ -51,6 +52,22 @@ impl LameEncoder {
                 // Deinterleave
                 let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
                 let right: Vec<f32> = samples.iter().skip(1).step_by(2).copied().collect();
+
+                let n = left.len();
+                let head: [f32; 4] = std::array::from_fn(|i| *left.get(i).unwrap_or(&0.0));
+                let tail: [f32; 4] = std::array::from_fn(|i| {
+                    *left.get(n.saturating_sub(4) + i).unwrap_or(&0.0)
+                });
+                tracing::debug!(
+                    chunk = self.chunk_counter,
+                    total_samples = samples.len(),
+                    samples_per_ch = n,
+                    head_L = ?head,
+                    tail_L = ?tail,
+                    "lame encode chunk"
+                );
+                self.chunk_counter += 1;
+
                 mp3lame_sys::lame_encode_buffer_ieee_float(
                     self.gfp,
                     left.as_ptr(),
