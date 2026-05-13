@@ -101,6 +101,9 @@ impl StreamDecoder {
                 self.buf.lock().unwrap().data.clear();
                 return Ok((vec![], 0, 0));
             }
+            // try_init() ran a warmup pass that consumed the init buffer.
+            // Return empty until fresh data arrives on the next push.
+            return Ok((vec![], 0, 0));
         } else {
             self.buf.lock().unwrap().data.extend(data.iter().copied());
         }
@@ -148,6 +151,10 @@ impl StreamDecoder {
             .map_err(|e| TranscodeError::DecoderInit(e.to_string()))?;
 
         self.inner = Some(DecoderInner { format, decoder, track_id, sample_rate, channels });
+        // Warmup: decode and discard the init buffer so the bit reservoir fills.
+        // Frames decoded here start mid-stream and contain artifacts; discarding
+        // them hides the startup glitch from the output.
+        let _ = self.drain_packets();
         Ok(())
     }
 

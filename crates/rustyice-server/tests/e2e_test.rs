@@ -324,7 +324,10 @@ async fn graceful_shutdown_closes_connections() {
 // Helper: build a short MP3 stream (about 1 second of silence) for test use
 fn generate_test_mp3() -> Vec<u8> {
     let mut enc = rustyice_transcode::LameEncoder::new(44100, 44100, 2, 128).unwrap();
-    let silence = vec![0.0f32; 44100 * 2]; // 1 second stereo
+    // 5 seconds: enough data for multiple decode batches after the decoder warmup
+    // phase (which consumes the first ~8 KB to fill the MP3 bit reservoir), so
+    // the listener always receives at least one chunk before the source disconnects.
+    let silence = vec![0.0f32; 44100 * 2 * 5];
     let mut data = enc.encode(&silence).unwrap();
     data.extend_from_slice(&enc.flush().unwrap());
     data
