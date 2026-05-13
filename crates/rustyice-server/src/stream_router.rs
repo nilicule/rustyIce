@@ -80,11 +80,24 @@ async fn source_handler(
 
     let result = ingest.run(reader, mount.bus.clone(), codec, source_cancel).await;
     match result {
-        Err(IngestError::TranscodeInit(e)) => {
-            warn!("transcode init failed for {mount_path}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        Ok(stats) => {
+            info!(
+                "source stream ended: mount={mount_path} bytes={} packets={}",
+                stats.bytes_received, stats.packets_published
+            );
+            StatusCode::OK.into_response()
         }
-        _ => StatusCode::OK.into_response(),
+        Err(IngestError::TranscodeInit(e)) => {
+            tracing::error!("transcode init failed for {mount_path}: {e}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, "60")],
+                "transcoding unavailable",
+            ).into_response()
+        }
+        Err(IngestError::Io(_)) | Err(IngestError::Cancelled) | Err(IngestError::MountBusy) => {
+            StatusCode::OK.into_response()
+        }
     }
 }
 
@@ -146,6 +159,7 @@ fn build_ingest_for_mount(state: &AppState, mount_path: &str) -> IcecastIngest {
     let transcode = if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
         cfg.effective_transcode(mc).cloned()
     } else {
+        // Dynamic mount: no per-mount config exists, use the global default.
         cfg.transcode.clone()
     };
 
