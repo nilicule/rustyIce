@@ -67,10 +67,24 @@ impl IngestProtocol for IcecastIngest {
 
         let mut stats = SourceStats::default();
         let start = Instant::now();
-        // Rate in bytes/sec: manual override takes priority, otherwise
-        // auto-detected from the first valid MP3 frame header.
-        let mut rate: Option<u64> = self.max_rate_bps;
-        let mut rate_locked = rate.is_some();
+
+        // When transcoding we pace on *output* bytes at the output bitrate so
+        // that listeners always receive audio at exactly the configured rate,
+        // regardless of the source bitrate or how many complete frames happen
+        // to decode per source chunk (frame-boundary fragmentation would
+        // otherwise deliver only ~77 % of the expected audio rate with a
+        // 320→128 kbps transcode, causing buffer underruns and choppy audio).
+        //
+        // In passthrough mode we pace on source bytes at the detected source
+        // bitrate (unchanged behaviour).
+        let transcode_output_bps: Option<u64> = self.transcode.as_ref()
+            .map(|tc| tc.bitrate_kbps as u64 * 1000 / 8);
+        let mut output_bytes: u64 = 0;
+
+        // Source-rate tracking: used for passthrough pacing and as a fallback
+        // during the transcoder init phase (before the first output is produced).
+        let mut source_rate: Option<u64> = self.max_rate_bps;
+        let mut source_rate_locked = source_rate.is_some();
 
         // Reading happens in its own task so the network is drained at full
         // speed independently of the playback-paced publish loop. Otherwise the
@@ -131,11 +145,11 @@ impl IngestProtocol for IcecastIngest {
                     };
                     let n = data.len();
 
-                    if !rate_locked && codec == CodecId::MP3 {
+                    if !source_rate_locked && codec == CodecId::MP3 {
                         if let Some(bps) = rustyice_codec::mp3::scan_bitrate_bps(&data) {
-                            debug!("MP3 bitrate detected: {}kbps — pacing source", bps * 8 / 1000);
-                            rate = Some(bps);
-                            rate_locked = true;
+                            debug!("MP3 bitrate detected: {}kbps", bps * 8 / 1000);
+                            source_rate = Some(bps);
+                            source_rate_locked = true;
                         }
                     }
 
@@ -155,6 +169,7 @@ impl IngestProtocol for IcecastIngest {
                     };
 
                     if let Some(data) = packet_data {
+                        output_bytes += data.len() as u64;
                         let packet = Arc::new(StreamPacket {
                             payload: AudioPayload::Encoded(EncodedPacket {
                                 codec: codec.clone(),
@@ -167,9 +182,20 @@ impl IngestProtocol for IcecastIngest {
                         stats.packets_published += 1;
                     }
 
-                    if let Some(bps) = rate {
+                    // Choose pacing metric:
+                    //   - Transcoding, output flowing: output bytes / output bps
+                    //   - Transcoding, still in init (no output yet): fall back to
+                    //     source bytes / source bps so file sources don't flood the
+                    //     MPSC during the decoder warm-up window.
+                    //   - Passthrough: source bytes / source bps (unchanged).
+                    let (pacing_bytes, pacing_bps) = match transcode_output_bps {
+                        Some(obps) if output_bytes > 0 => (output_bytes, Some(obps)),
+                        _ => (stats.bytes_received, source_rate),
+                    };
+
+                    if let Some(bps) = pacing_bps {
                         let target = Duration::from_secs_f64(
-                            stats.bytes_received as f64 / bps as f64,
+                            pacing_bytes as f64 / bps as f64,
                         );
                         let elapsed = start.elapsed();
                         if target > elapsed {

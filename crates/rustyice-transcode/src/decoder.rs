@@ -13,7 +13,10 @@ use symphonia::core::{
 use crate::TranscodeError;
 
 /// Minimum bytes to accumulate before attempting format probe.
-const INIT_THRESHOLD: usize = 4096;
+/// Keeping this at 2× the typical chunk size (4 096 B) so symphonia has at
+/// least two chunks of source data in its MSS buffer before the first decode,
+/// reducing the chance of a WouldBlock mid-frame on the very first pass.
+const INIT_THRESHOLD: usize = 8_192;
 
 struct PipeBuf {
     data: VecDeque<u8>,
