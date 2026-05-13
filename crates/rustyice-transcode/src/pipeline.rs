@@ -19,6 +19,11 @@ pub struct TranscodePipeline {
 }
 
 impl TranscodePipeline {
+    #[cfg(test)]
+    pub(crate) fn resampler_is_active(&self) -> bool {
+        self.resampler.is_some()
+    }
+
     pub fn new(config: TranscodeConfig) -> Result<Self, TranscodeError> {
         // Encoder is built eagerly with config sample rate and a placeholder source rate.
         // It will be rebuilt on the first frame if source rate differs.
@@ -217,11 +222,12 @@ mod tests {
 
     #[test]
     fn roundtrip_silence_through_pipeline() {
-        // Encode 1 second of silence with LAME, then decode+reencode through pipeline.
+        // Encode 5 seconds of silence with LAME to ensure LAME flushes output,
+        // then decode+reencode through pipeline.
         use crate::encoder::LameEncoder;
 
         let mut enc = LameEncoder::new(44100, 44100, 2, 128).unwrap();
-        let silence = vec![0.0f32; 44100 * 2]; // 1 second stereo silence
+        let silence = vec![0.0f32; 44100 * 2 * 5]; // 5 seconds stereo silence
         let mut mp3_data = enc.encode(&silence).unwrap();
         mp3_data.extend_from_slice(&enc.flush().unwrap());
 
@@ -252,16 +258,12 @@ mod tests {
             all_output.extend_from_slice(&tail);
         }
 
-        // Output should either be empty (LAME didn't produce frames from silence)
-        // or contain valid MP3 sync words if it did produce output.
-        if !all_output.is_empty() {
-            assert!(
-                all_output.iter().enumerate().any(|(i, &b)| {
-                    i + 1 < all_output.len() && b == 0xFF && (all_output[i + 1] & 0xE0) == 0xE0
-                }),
-                "pipeline output must contain MP3 sync words"
-            );
-        }
+        // Output must be non-empty and contain valid MP3 sync words.
+        assert!(!all_output.is_empty(), "pipeline must produce output from 5 seconds of audio");
+        assert!(
+            all_output.windows(2).any(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0),
+            "pipeline output must contain MP3 sync words"
+        );
     }
 
     #[test]
@@ -302,21 +304,49 @@ mod tests {
             }
         }
 
-        // Either produced output or gracefully produced nothing (silence edge case).
-        // What matters is the pipeline didn't panic with a rate mismatch.
-        let _ = any_output;
+        assert!(any_output, "pipeline must produce output when resampling 48000 Hz to 44100 Hz");
+        assert!(
+            pipeline.resampler_is_active(),
+            "resampler must be initialized when source rate differs from target rate"
+        );
+    }
+
+    fn generate_vbr_mp3() -> Vec<u8> {
+        use mp3lame_sys::*;
+        unsafe {
+            let gfp = lame_init();
+            lame_set_in_samplerate(gfp, 44100);
+            lame_set_out_samplerate(gfp, 44100);
+            lame_set_num_channels(gfp, 2);
+            lame_set_VBR(gfp, vbr_mode::vbr_default);
+            lame_set_VBR_quality(gfp, 5.0);
+            lame_init_params(gfp);
+
+            let num_samples = 44100; // 1 second per channel
+            let silence_l = vec![0.0f32; num_samples];
+            let silence_r = vec![0.0f32; num_samples];
+            let mut out = vec![0u8; num_samples * 5 / 4 + 7200];
+            let n = lame_encode_buffer_ieee_float(
+                gfp, silence_l.as_ptr(), silence_r.as_ptr(),
+                num_samples as i32, out.as_mut_ptr(), out.len() as i32,
+            );
+            let mut flush = vec![0u8; 7200];
+            let f = lame_encode_flush(gfp, flush.as_mut_ptr(), 7200);
+            lame_close(gfp);
+
+            let mut result = Vec::new();
+            if n > 0 { result.extend_from_slice(&out[..n as usize]); }
+            if f > 0 { result.extend_from_slice(&flush[..f as usize]); }
+            result
+        }
     }
 
     #[test]
     fn vbr_stream_processes_without_error() {
-        use crate::encoder::LameEncoder;
         use rustyice_core::config::TranscodeFormat;
 
-        // Generate a simple MP3 stream (LAME produces VBR-like output with silence)
-        let mut enc = LameEncoder::new(44100, 44100, 2, 128).unwrap();
-        let silence = vec![0.0f32; 44100 * 2];
-        let mut mp3_data: Vec<u8> = enc.encode(&silence).unwrap();
-        mp3_data.extend_from_slice(&enc.flush().unwrap());
+        // Generate a real VBR MP3 with a Xing header
+        let mp3_data = generate_vbr_mp3();
 
         if mp3_data.is_empty() {
             return; // Nothing to test
@@ -330,19 +360,31 @@ mod tests {
         .unwrap();
 
         // Feed in small chunks simulating streaming delivery
+        let mut all_output = Vec::new();
         let mut error_count = 0usize;
         for chunk in mp3_data.chunks(512) {
-            if let Err(_) = pipeline.push(chunk) {
-                error_count += 1;
+            match pipeline.push(chunk) {
+                Ok(out) => all_output.extend_from_slice(&out),
+                Err(_) => error_count += 1,
             }
         }
-        let _ = pipeline.flush();
+        if let Ok(tail) = pipeline.flush() {
+            all_output.extend_from_slice(&tail);
+        }
 
         // Tolerate some errors (silence frames may not decode cleanly),
         // but not every single chunk should fail
         assert!(
             error_count < mp3_data.chunks(512).count(),
             "every chunk failed to transcode — check pipeline logic"
+        );
+
+        // The transcoded output must NOT contain a Xing/Info VBR header,
+        // since re-encoding via LAME for streaming does not insert one.
+        let xing_present = all_output.windows(4).any(|w| w == b"Xing" || w == b"Info");
+        assert!(
+            !xing_present,
+            "transcoded output must not contain a Xing/Info VBR header"
         );
     }
 }

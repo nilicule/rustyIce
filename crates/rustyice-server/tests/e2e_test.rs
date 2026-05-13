@@ -488,14 +488,11 @@ async fn transcoded_source_delivers_mp3_to_listener() {
         .expect("timeout waiting for transcoded audio chunk")
         .expect("request error");
 
-    if let Some(bytes) = first_chunk {
-        if !bytes.is_empty() {
-            // Verify output contains valid MP3 sync words
-            let has_sync = bytes.windows(2).any(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0);
-            assert!(has_sync, "transcoded output should contain MP3 sync words");
-        }
-        // If bytes is empty, LAME buffered everything — acceptable for silence
-    }
+    let bytes = first_chunk
+        .expect("transcoded source must deliver at least one chunk to listener");
+    assert!(!bytes.is_empty(), "transcoded output chunk must be non-empty");
+    let has_sync_word = bytes.windows(2).any(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0);
+    assert!(has_sync_word, "transcoded output must contain valid MP3 sync words");
 
     shutdown.cancel();
 }
