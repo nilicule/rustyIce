@@ -33,7 +33,7 @@ impl OutputProtocol for HttpPassthroughOutput {
         mut writer: Pin<Box<dyn AsyncWrite + Send + Unpin>>,
         mut subscription: Pin<Box<dyn futures::Stream<Item = Arc<StreamPacket>> + Send>>,
         mount_info: Arc<MountInfo>,
-        _current_title: Arc<arc_swap::ArcSwap<Option<String>>>,
+        current_title: Arc<arc_swap::ArcSwap<Option<String>>>,
         icy_requested: bool,
         cancellation: CancellationToken,
     ) -> Result<ListenerStats, OutputError> {
@@ -61,6 +61,7 @@ impl OutputProtocol for HttpPassthroughOutput {
                             &mut writer,
                             data,
                             &mount_info,
+                            &current_title,
                             self.icy_metaint,
                             &mut bytes_since_meta,
                             &mut bytes_sent,
@@ -87,6 +88,7 @@ async fn write_with_icy(
     writer: &mut Pin<Box<dyn AsyncWrite + Send + Unpin>>,
     data: &bytes::Bytes,
     info: &MountInfo,
+    current_title: &Arc<arc_swap::ArcSwap<Option<String>>>,
     metaint: usize,
     bytes_since_meta: &mut usize,
     bytes_sent: &mut u64,
@@ -102,7 +104,7 @@ async fn write_with_icy(
         offset = chunk_end;
 
         if *bytes_since_meta >= metaint {
-            let frame = build_icy_frame(info);
+            let frame = build_icy_frame(info, current_title);
             writer.write_all(&frame).await.map_err(OutputError::Io)?;
             *bytes_since_meta = 0;
         }
@@ -110,8 +112,15 @@ async fn write_with_icy(
     Ok(())
 }
 
-fn build_icy_frame(info: &MountInfo) -> Vec<u8> {
-    let title = info.metadata.name.as_deref().unwrap_or("");
+fn build_icy_frame(
+    info: &MountInfo,
+    current_title: &Arc<arc_swap::ArcSwap<Option<String>>>,
+) -> Vec<u8> {
+    let title_snap = current_title.load_full();
+    let title = title_snap
+        .as_deref()
+        .or(info.metadata.name.as_deref())
+        .unwrap_or("");
     let url = info.metadata.url.as_deref().unwrap_or("");
     if title.is_empty() && url.is_empty() {
         return vec![0x00];
@@ -247,5 +256,82 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stats.disconnect_reason, DisconnectReason::ShuttingDown);
+    }
+
+    fn parse_icy_meta(received: &[u8], metaint: usize) -> String {
+        // After `metaint` audio bytes, the next byte is the meta length in 16-byte units.
+        assert!(received.len() > metaint, "no metadata block in response");
+        let len_byte = received[metaint] as usize;
+        let meta_start = metaint + 1;
+        let meta_end = meta_start + len_byte * 16;
+        assert!(received.len() >= meta_end, "metadata truncated");
+        let raw = &received[meta_start..meta_end];
+        // Trim trailing NULs (padding to 16-byte block).
+        let end = raw.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
+        String::from_utf8_lossy(&raw[..end]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn icy_uses_admin_title_when_set_over_mount_name() {
+        let (mut read_end, write_end) = tokio::io::duplex(65_536);
+        let writer: Pin<Box<dyn AsyncWrite + Send + Unpin>> = Box::pin(write_end);
+        let payload = vec![0xABu8; 16];
+        let subscription: Pin<Box<dyn futures::Stream<Item = Arc<StreamPacket>> + Send>> =
+            Box::pin(stream::iter(vec![make_packet(&payload)]));
+
+        let title: Arc<arc_swap::ArcSwap<Option<String>>> =
+            Arc::new(arc_swap::ArcSwap::from_pointee(Some("Artist - Song".to_string())));
+
+        HttpPassthroughOutput { icy_metaint: 8 }
+            .run(writer, subscription, make_mount_info(Some("Mount Name")), title, true, CancellationToken::new())
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        read_end.read_to_end(&mut received).await.unwrap();
+        let meta = parse_icy_meta(&received, 8);
+        assert!(meta.contains("StreamTitle='Artist - Song';"),
+            "admin title should win; got meta={meta:?}");
+        assert!(!meta.contains("StreamTitle='Mount Name';"),
+            "mount name must not be used when admin title is set");
+    }
+
+    #[tokio::test]
+    async fn icy_falls_back_to_mount_name_when_title_unset() {
+        let (mut read_end, write_end) = tokio::io::duplex(65_536);
+        let writer: Pin<Box<dyn AsyncWrite + Send + Unpin>> = Box::pin(write_end);
+        let payload = vec![0xABu8; 16];
+        let subscription: Pin<Box<dyn futures::Stream<Item = Arc<StreamPacket>> + Send>> =
+            Box::pin(stream::iter(vec![make_packet(&payload)]));
+
+        HttpPassthroughOutput { icy_metaint: 8 }
+            .run(writer, subscription, make_mount_info(Some("Mount Name")), empty_title(), true, CancellationToken::new())
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        read_end.read_to_end(&mut received).await.unwrap();
+        let meta = parse_icy_meta(&received, 8);
+        assert!(meta.contains("StreamTitle='Mount Name';"),
+            "should fall back to mount name; got meta={meta:?}");
+    }
+
+    #[tokio::test]
+    async fn icy_empty_when_both_title_and_name_unset() {
+        let (mut read_end, write_end) = tokio::io::duplex(65_536);
+        let writer: Pin<Box<dyn AsyncWrite + Send + Unpin>> = Box::pin(write_end);
+        let subscription: Pin<Box<dyn futures::Stream<Item = Arc<StreamPacket>> + Send>> =
+            Box::pin(stream::iter(vec![make_packet(&[0u8; 4])]));
+
+        HttpPassthroughOutput { icy_metaint: 4 }
+            .run(writer, subscription, make_mount_info(None), empty_title(), true, CancellationToken::new())
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        read_end.read_to_end(&mut received).await.unwrap();
+        // 4 audio bytes + 1 length byte (0 = no meta).
+        assert_eq!(received.len(), 5);
+        assert_eq!(received[4], 0x00);
     }
 }
