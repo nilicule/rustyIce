@@ -197,4 +197,54 @@ mod tests {
         assert_eq!(mount.info.load().source_password, "newpw");
         assert_eq!(mount.info.load().metadata.name.as_deref(), Some("New Name"));
     }
+
+    #[tokio::test]
+    async fn reload_preserves_current_title() {
+        let _config = Arc::new(ArcSwap::from_pointee(base_config()));
+        let registry = MountRegistry::new();
+
+        registry.add(Arc::new(ActiveMount::new(
+            MountInfo {
+                path: "/stream".to_string(),
+                codec: CodecId::MP3,
+                source_password: "oldpw".to_string(),
+                max_listeners: None,
+                metadata: MountMetadata {
+                    name: Some("Old Name".to_string()),
+                    ..Default::default()
+                },
+            },
+            Arc::new(NullBus),
+        )));
+
+        // Admin sets a runtime title before reload happens.
+        let mount = registry.get("/stream").unwrap();
+        mount.current_title.store(Arc::new(Some("Now Playing".to_string())));
+
+        // Mimic the body of `do_reload` for the single mount: build a new
+        // MountInfo and store it.
+        let mut new_cfg = base_config();
+        new_cfg.mounts[0].name = Some("Reloaded Name".to_string());
+        let mount_cfg = &new_cfg.mounts[0];
+        let old_info = mount.info.load_full();
+        let new_info = MountInfo {
+            path: old_info.path.clone(),
+            codec: old_info.codec.clone(),
+            source_password: mount_cfg.source_password.clone(),
+            max_listeners: mount_cfg.max_listeners,
+            metadata: MountMetadata {
+                name: mount_cfg.name.clone(),
+                description: mount_cfg.description.clone(),
+                genre: mount_cfg.genre.clone(),
+                url: mount_cfg.url.clone(),
+            },
+        };
+        mount.info.store(Arc::new(new_info));
+
+        // Title survives.
+        let snap = mount.current_title.load();
+        assert_eq!(snap.as_deref(), Some("Now Playing"));
+        // Name was reloaded.
+        assert_eq!(mount.info.load().metadata.name.as_deref(), Some("Reloaded Name"));
+    }
 }
