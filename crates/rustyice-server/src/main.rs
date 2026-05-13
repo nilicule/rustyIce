@@ -19,7 +19,7 @@ use rustyice_core::{
 };
 use rustyice_ingest::IcecastIngest;
 use rustyice_output::HttpPassthroughOutput;
-use std::{path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
@@ -118,12 +118,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── Run stream server (blocks until shutdown) ───────────────────────────
+    // `into_make_service_with_connect_info::<SocketAddr>()` exposes each
+    // listener's peer address to handlers via `ConnectInfo<SocketAddr>`, used
+    // by the admin "listeners" view to show the client address.
     let stream_shutdown = shutdown.clone();
-    axum::serve(stream_listener, stream_router)
-        .with_graceful_shutdown(async move {
-            shutdown_signal(stream_shutdown.clone()).await;
-        })
-        .await?;
+    axum::serve(
+        stream_listener,
+        stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal(stream_shutdown.clone()).await;
+    })
+    .await?;
 
     info!("rustyice stopped");
     Ok(())

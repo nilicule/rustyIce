@@ -460,6 +460,7 @@ a.stream-row:hover .stream-path::before {
   font-weight: 500;
 }
 .listeners-table tr:last-child td { border-bottom: none; }
+.listeners-table td.listener-addr { color: var(--fg-muted); }
 .listeners-empty {
   padding: 1.25rem;
   color: var(--fg-dim);
@@ -467,6 +468,27 @@ a.stream-row:hover .stream-path::before {
   font-size: .85rem;
   text-align: center;
 }
+
+/* Drill-down link on the LISTENERS field of an admin mount card. */
+.listener-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .35rem;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+.listener-link:hover { color: var(--accent); }
+.listener-link-cue { color: var(--fg-dim); font-size: .9em; }
+.listener-link:hover .listener-link-cue { color: var(--accent); }
+
+/* Back link in the mount-detail eyebrow. */
+.back-link {
+  color: inherit;
+  text-decoration: none;
+  letter-spacing: inherit;
+}
+.back-link:hover { color: var(--accent); }
 
 /* ─── footer ─────────────────────────────────────────────────────────── */
 .footer {

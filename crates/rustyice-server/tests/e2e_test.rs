@@ -16,6 +16,7 @@ use rustyice_server::{
     bus::TokioBroadcastBus, source_layer::SourceMethodLayer, state::AppState,
     stream_router::build_stream_router,
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -124,10 +125,13 @@ async fn build_test_server_with(
 
     let stream_sd = shutdown.clone();
     tokio::spawn(async move {
-        axum::serve(stream_listener, stream_router)
-            .with_graceful_shutdown(async move { stream_sd.cancelled().await })
-            .await
-            .unwrap();
+        axum::serve(
+            stream_listener,
+            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { stream_sd.cancelled().await })
+        .await
+        .unwrap();
     });
 
     let admin_sd = shutdown.clone();
@@ -233,10 +237,13 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
 
     let stream_sd = shutdown.clone();
     tokio::spawn(async move {
-        axum::serve(stream_listener, stream_router)
-            .with_graceful_shutdown(async move { stream_sd.cancelled().await })
-            .await
-            .unwrap();
+        axum::serve(
+            stream_listener,
+            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { stream_sd.cancelled().await })
+        .await
+        .unwrap();
     });
 
     let admin_sd = shutdown.clone();
@@ -571,10 +578,13 @@ async fn build_test_server_with_transcode(bitrate_kbps: u32) -> (u16, u16, Cance
 
     let stream_sd = shutdown.clone();
     tokio::spawn(async move {
-        axum::serve(stream_listener, stream_router)
-            .with_graceful_shutdown(async move { stream_sd.cancelled().await })
-            .await
-            .unwrap();
+        axum::serve(
+            stream_listener,
+            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { stream_sd.cancelled().await })
+        .await
+        .unwrap();
     });
 
     let admin_sd = shutdown.clone();
@@ -706,6 +716,63 @@ async fn admin_title_appears_in_listener_icy_metadata() {
     assert!(
         meta_after_clear.contains("StreamTitle='Test';"),
         "after clear, expected fallback to mount name 'Test'; got: {meta_after_clear:?}"
+    );
+
+    drop(listener_resp);
+    let _ = source_handle.await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn admin_api_exposes_listener_peer_address() {
+    let (stream_port, admin_port, shutdown, sessions) =
+        build_test_server_with_sessions().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let token = sessions.create("admin".to_string());
+    let cookie = format!("rustyice_session={token}");
+
+    // Source connects and streams indefinitely so the listener stays attached.
+    let source_url = format!("http://127.0.0.1:{stream_port}/stream");
+    let audio: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(65_536).collect();
+    let source_handle = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&source_url)
+            .header("Authorization", "Basic dGVzdHBhc3M=") // base64("testpass")
+            .header("Content-Type", "audio/mpeg")
+            .body(audio)
+            .send()
+            .await;
+    });
+
+    // Listener connects so the admin API has someone to report on.
+    let listener_resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{stream_port}/stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listener_resp.status(), 200);
+
+    // Give the server a moment to register the listener.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{admin_port}/api/mounts/stream/listeners"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["mount_path"], "/stream");
+    let listeners = body["listeners"].as_array().expect("listeners is array");
+    assert!(!listeners.is_empty(), "expected at least one listener");
+    let entry = &listeners[0];
+    assert!(entry["id"].is_number(), "listener id should be numeric");
+    let addr = entry["address"].as_str().expect("address should be a string");
+    assert!(
+        addr.starts_with("127.0.0.1:"),
+        "address should be 127.0.0.1:port, got: {addr}"
     );
 
     drop(listener_resp);

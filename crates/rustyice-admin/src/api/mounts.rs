@@ -39,9 +39,15 @@ pub async fn list_mounts(State(state): State<AdminState>) -> Json<Vec<MountStatu
 }
 
 #[derive(Serialize)]
+pub struct ListenerInfo {
+    pub id: u64,
+    pub address: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct ListenerList {
     pub mount_path: String,
-    pub listener_ids: Vec<u64>,
+    pub listeners: Vec<ListenerInfo>,
 }
 
 /// # Errors
@@ -54,8 +60,14 @@ pub async fn list_listeners(
     if state.mounts.get(&path).is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
-    Ok(Json(ListenerList {
-        mount_path: path.clone(),
-        listener_ids: state.listeners.ids_for_mount(&path),
-    }))
+    let listeners = state
+        .listeners
+        .details_for_mount(&path)
+        .into_iter()
+        .map(|d| ListenerInfo {
+            id: d.id,
+            address: d.peer_addr.map(|a| a.to_string()),
+        })
+        .collect();
+    Ok(Json(ListenerList { mount_path: path, listeners }))
 }

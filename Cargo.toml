@@ -8,6 +8,20 @@ members = [
     "crates/rustyice-admin",
     "crates/rustyice-server",
     "crates/rustyice-transcode",
+    "crates/rustyice-loadtest",
+]
+# The loadtest crate is excluded from default builds so `cargo build --release`
+# never links it into the production binary. Run it explicitly with
+# `cargo run --release -p rustyice-loadtest`.
+default-members = [
+    "crates/rustyice-core",
+    "crates/rustyice-codec",
+    "crates/rustyice-auth",
+    "crates/rustyice-ingest",
+    "crates/rustyice-output",
+    "crates/rustyice-admin",
+    "crates/rustyice-server",
+    "crates/rustyice-transcode",
 ]
 resolver = "2"
 

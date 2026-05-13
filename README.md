@@ -156,6 +156,25 @@ Only MP3 sources are supported for transcoding. Connecting a non-MP3 source (Ogg
 
 Send `SIGHUP` to hot-reload the config (mount metadata and auth credentials update without dropping listeners).
 
+## Load testing
+
+A separate `rustyice-loadtest` crate opens N concurrent listeners against a running server and reports per-second throughput and dropped connections. It is excluded from `default-members`, so `cargo build --release` never compiles or links it — invoke it explicitly:
+
+```sh
+ulimit -n 65535          # raise fd limit before stressing past a few hundred listeners
+cargo run --release -p rustyice-loadtest -- http://localhost:8000/stream -n 1000 -r 10 -d 60
+```
+
+Flags:
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `-n, --listeners`     | `100` | Concurrent listeners held open |
+| `-r, --ramp-secs`     | `5`   | Ramp window — listeners dialed evenly over this period |
+| `-d, --duration-secs` | `60`  | Hold duration after ramp completes |
+
+Output is one line per second showing connected count, RX KiB/s, and cumulative drop counts (`drop_eof`, `drop_err`, `connect_err`), followed by a final tally. While the test runs, watch `top`, `lsof -p <pid> | wc -l`, and the server's `/metrics` endpoint to spot the real bottleneck (typically fd limits → CPU on transcode → uplink saturation).
+
 ## Development
 
 ```sh

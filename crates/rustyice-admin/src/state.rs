@@ -2,6 +2,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use rustyice_core::mount::MountRegistry;
 use rustyice_core::traits::AuthBackend;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -65,8 +66,14 @@ pub type ListenerId = u64;
 pub struct ListenerEntry {
     pub id: ListenerId,
     pub mount_path: String,
+    pub peer_addr: Option<SocketAddr>,
     pub connected_at: Instant,
     pub cancel: CancellationToken,
+}
+
+pub struct ListenerDetail {
+    pub id: ListenerId,
+    pub peer_addr: Option<SocketAddr>,
 }
 
 #[derive(Default)]
@@ -83,11 +90,22 @@ impl ListenerMap {
 
     /// # Panics
     /// Panics if the internal `RwLock` is poisoned.
-    pub fn register(&self, mount_path: String, cancel: CancellationToken) -> ListenerId {
+    pub fn register(
+        &self,
+        mount_path: String,
+        peer_addr: Option<SocketAddr>,
+        cancel: CancellationToken,
+    ) -> ListenerId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.entries.write().unwrap().insert(
             id,
-            ListenerEntry { id, mount_path, connected_at: Instant::now(), cancel },
+            ListenerEntry {
+                id,
+                mount_path,
+                peer_addr,
+                connected_at: Instant::now(),
+                cancel,
+            },
         );
         id
     }
@@ -118,6 +136,18 @@ impl ListenerMap {
             .values()
             .filter(|e| e.mount_path == mount_path)
             .map(|e| e.id)
+            .collect()
+    }
+
+    /// # Panics
+    /// Panics if the internal `RwLock` is poisoned.
+    pub fn details_for_mount(&self, mount_path: &str) -> Vec<ListenerDetail> {
+        self.entries
+            .read()
+            .unwrap()
+            .values()
+            .filter(|e| e.mount_path == mount_path)
+            .map(|e| ListenerDetail { id: e.id, peer_addr: e.peer_addr })
             .collect()
     }
 

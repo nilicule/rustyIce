@@ -2,7 +2,7 @@ use crate::bus::TokioBroadcastBus;
 use crate::state::AppState;
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, put},
@@ -16,6 +16,7 @@ use rustyice_core::mount::{ActiveMount, MountInfo, MountMetadata, MountRegistry}
 use rustyice_core::traits::IngestProtocol;
 use rustyice_core::types::CodecId;
 use rustyice_ingest::IcecastIngest;
+use std::net::SocketAddr;
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
 use tokio_util::io::StreamReader;
@@ -224,9 +225,11 @@ impl Drop for SourceDisconnectGuard {
 async fn listener_handler(
     State(state): State<AppState>,
     Path(mount_segment): Path<String>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
     let mount_path = format!("/{mount_segment}");
+    let peer_addr = Some(peer_addr);
 
     let Some(mount) = state.mounts.get(&mount_path) else {
         return (StatusCode::NOT_FOUND, "mount not found").into_response();
@@ -255,7 +258,7 @@ async fn listener_handler(
     let listener_cancel = state.shutdown.child_token();
     let listener_id = state
         .listeners
-        .register(mount_path.clone(), listener_cancel.clone());
+        .register(mount_path.clone(), peer_addr, listener_cancel.clone());
 
     let (read_end, write_end) = tokio::io::duplex(65_536);
     let writer: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> =

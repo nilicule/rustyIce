@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const show = (id) => $(id).classList.remove('hidden');
 const hide = (id) => $(id).classList.add('hidden');
 
-const VIEWS = ['view-landing', 'view-login', 'view-admin'];
+const VIEWS = ['view-landing', 'view-login', 'view-admin', 'view-mount-detail'];
 function showView(id) {
   for (const v of VIEWS) (v === id ? show : hide)(v);
 }
@@ -28,18 +28,27 @@ function escapeHtml(s) {
 
 // ─── state ─────────────────────────────────────────────────────────────
 let state = {
-  view: 'landing',           // 'landing' | 'login' | 'admin'
-  user: null,                // username when signed in
+  view: 'landing',           // 'landing' | 'login' | 'admin' | 'mount-detail'
+  user: null,
+  mountPath: null,           // set in mount-detail view
   pollHandle: null,
 };
 
 // ─── routing ───────────────────────────────────────────────────────────
 async function route() {
   const hash = location.hash;
+  const detailMatch = hash.match(/^#admin\/mount\/(.+)$/);
   if (hash === '#admin') {
     const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
     if (me) enterAdmin(me.user);
     else enterLogin();
+  } else if (detailMatch) {
+    const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
+    if (!me) { enterLogin(); return; }
+    let mountPath;
+    try { mountPath = decodeURIComponent(detailMatch[1]); }
+    catch { location.hash = '#admin'; return; }
+    enterMountDetail(me.user, mountPath);
   } else {
     enterLanding();
   }
@@ -47,6 +56,7 @@ async function route() {
 
 function enterLanding() {
   state.view = 'landing';
+  state.mountPath = null;
   showView('view-landing');
   startPolling(refreshLanding);
 }
@@ -62,9 +72,21 @@ function enterLogin() {
 function enterAdmin(user) {
   state.view = 'admin';
   state.user = user;
+  state.mountPath = null;
   $('admin-user-label').textContent = user;
   showView('view-admin');
   startPolling(refreshAdmin);
+}
+
+function enterMountDetail(user, mountPath) {
+  state.view = 'mount-detail';
+  state.user = user;
+  state.mountPath = mountPath;
+  $('detail-user-label').textContent = user;
+  $('detail-mount-path').textContent = mountPath;
+  $('mount-detail').innerHTML = '';
+  showView('view-mount-detail');
+  startPolling(refreshMountDetail);
 }
 
 function startPolling(fn) {
@@ -74,6 +96,12 @@ function startPolling(fn) {
 }
 function stopPolling() {
   if (state.pollHandle) { clearInterval(state.pollHandle); state.pollHandle = null; }
+}
+
+function refreshCurrent() {
+  if (state.view === 'admin') refreshAdmin();
+  else if (state.view === 'mount-detail') refreshMountDetail();
+  else if (state.view === 'landing') refreshLanding();
 }
 
 // ─── data: landing view (public read-only) ─────────────────────────────
@@ -130,36 +158,65 @@ async function refreshAdmin() {
     $('adm-stat-uptime').textContent = fmtUptime(stats.uptime_secs);
     $('footer-version').textContent = `v${stats.version}`;
 
-    // Pull listener detail for each connected mount in parallel.
-    const detail = await Promise.all(
-      mounts.map(async (m) => {
-        if (!m.source_connected) return { mount: m, listeners: [] };
-        const slug = m.path.replace(/^\//, '');
-        const r = await fetch(`/api/mounts/${encodeURIComponent(slug)}/listeners`);
-        if (!r.ok) {
-          if (r.status === 401) { enterLogin(); throw new Error('unauthorized'); }
-          return { mount: m, listeners: [] };
-        }
-        const body = await r.json();
-        return { mount: m, listeners: body.listener_ids };
-      })
-    );
-
-    if (!updateAdminMountsInPlace(detail)) {
-      renderAdminMounts(detail);
+    const rows = mounts.map((m) => ({ mount: m, listeners: [] }));
+    if (!updateMountListInPlace($('admin-mounts'), rows, { withListeners: false })) {
+      renderMountList($('admin-mounts'), rows, { withListeners: false });
     }
   } catch (e) {
     console.error('admin refresh failed', e);
   }
 }
 
-function renderAdminMounts(rows) {
-  const container = $('admin-mounts');
+// ─── data: mount detail view (auth required) ───────────────────────────
+async function refreshMountDetail() {
+  try {
+    const slug = state.mountPath.replace(/^\//, '');
+    const [mounts, stats, listenersResp] = await Promise.all([
+      fetch('/api/mounts').then((r) => r.json()),
+      fetch('/api/stats').then((r) => r.json()),
+      fetch(`/api/mounts/${encodeURIComponent(slug)}/listeners`).then((r) => {
+        if (r.status === 401) { enterLogin(); throw new Error('unauthorized'); }
+        if (!r.ok) return null;
+        return r.json();
+      }),
+    ]);
+
+    $('footer-version').textContent = `v${stats.version}`;
+
+    const mount = mounts.find((m) => m.path === state.mountPath);
+    if (!mount) {
+      $('mount-detail').innerHTML = '<div class="streams-empty">MOUNT NOT FOUND</div>';
+      return;
+    }
+    const listeners = (listenersResp && listenersResp.listeners) || [];
+    const rows = [{ mount, listeners }];
+    if (!updateMountListInPlace($('mount-detail'), rows, { withListeners: true })) {
+      renderMountList($('mount-detail'), rows, { withListeners: true });
+    }
+  } catch (e) {
+    if (e && e.message !== 'unauthorized') console.error('mount detail refresh failed', e);
+  }
+}
+
+// ─── mount card rendering ──────────────────────────────────────────────
+function renderMountList(container, rows, opts) {
   if (rows.length === 0) {
     container.innerHTML = '<div class="streams-empty">NO MOUNTS CONFIGURED</div>';
     return;
   }
-  container.innerHTML = rows.map(({ mount: m, listeners }) => `
+  container.innerHTML = rows.map((row) => renderMountCard(row, opts)).join('');
+  bindMountListHandlers(container);
+}
+
+function renderMountCard({ mount: m, listeners }, opts) {
+  const withListeners = !!(opts && opts.withListeners);
+  const listenerCountHtml = withListeners
+    ? `<span class="mount-field-value" data-listener-count>${m.listener_count}</span>`
+    : `<a class="mount-field-value listener-link" href="#admin/mount/${encodeURIComponent(m.path)}">
+         <span data-listener-count>${m.listener_count}</span>
+         <span class="listener-link-cue">→</span>
+       </a>`;
+  return `
     <div class="mount-card" data-mount-card="${escapeHtml(m.path)}" data-source-connected="${m.source_connected}">
       <div class="mount-card-head">
         <div>
@@ -178,7 +235,7 @@ function renderAdminMounts(rows) {
         </div>
         <div class="mount-field">
           <span class="mount-field-label">LISTENERS</span>
-          <span class="mount-field-value" data-listener-count>${m.listener_count}</span>
+          ${listenerCountHtml}
         </div>
         ${m.source_connected
           ? `<button class="btn btn-danger btn-sm" data-kick-source="${escapeHtml(m.path)}">KICK SOURCE</button>`
@@ -198,12 +255,14 @@ function renderAdminMounts(rows) {
         <button class="btn btn-ghost btn-sm" data-clear-title="${escapeHtml(m.path)}">CLEAR</button>
         <span class="mount-title-error error hidden" data-title-error="${escapeHtml(m.path)}"></span>
       </div>
-      ${m.source_connected
+      ${withListeners
         ? `<div class="mount-listeners" data-listeners-area>${renderListenersTable(listeners)}</div>`
         : ''}
     </div>
-  `).join('');
+  `;
+}
 
+function bindMountListHandlers(container) {
   container.querySelectorAll('[data-kick-source]').forEach((btn) => {
     btn.addEventListener('click', () => kickSource(btn.dataset.kickSource));
   });
@@ -231,10 +290,11 @@ function bindKickListenerHandlers(root) {
 }
 
 // Update existing mount cards in place. Returns false if the DOM structure
-// no longer matches the incoming rows (mount added/removed or a source flipped
-// between connected/offline) — caller should perform a full rebuild.
-function updateAdminMountsInPlace(rows) {
-  const container = $('admin-mounts');
+// no longer matches the incoming rows (mount added/removed, a source flipped
+// between connected/offline, or the listeners area presence changed) —
+// caller should perform a full rebuild.
+function updateMountListInPlace(container, rows, opts) {
+  const withListeners = !!(opts && opts.withListeners);
   const cards = container.querySelectorAll('.mount-card[data-mount-card]');
   if (cards.length !== rows.length) return false;
   for (let i = 0; i < rows.length; i++) {
@@ -242,6 +302,8 @@ function updateAdminMountsInPlace(rows) {
     const { mount: m } = rows[i];
     if (card.dataset.mountCard !== m.path) return false;
     if (card.dataset.sourceConnected !== String(m.source_connected)) return false;
+    const hasArea = !!card.querySelector('[data-listeners-area]');
+    if (hasArea !== withListeners) return false;
   }
   for (let i = 0; i < rows.length; i++) {
     const card = cards[i];
@@ -261,7 +323,7 @@ function updateAdminMountsInPlace(rows) {
       if (input.value !== next) input.value = next;
     }
 
-    if (m.source_connected) {
+    if (withListeners) {
       const area = card.querySelector('[data-listeners-area]');
       if (area) {
         const next = renderListenersTable(listeners);
@@ -275,21 +337,22 @@ function updateAdminMountsInPlace(rows) {
   return true;
 }
 
-function renderListenersTable(ids) {
-  if (ids.length === 0) {
+function renderListenersTable(listeners) {
+  if (listeners.length === 0) {
     return '<div class="listeners-empty">no listeners connected</div>';
   }
   return `
     <table class="listeners-table">
       <thead>
-        <tr><th>LISTENER ID</th><th></th></tr>
+        <tr><th>LISTENER ID</th><th>ADDRESS</th><th></th></tr>
       </thead>
       <tbody>
-        ${ids.map((id) => `
+        ${listeners.map((l) => `
           <tr>
-            <td>#${id}</td>
+            <td>#${l.id}</td>
+            <td class="listener-addr">${escapeHtml(l.address || '—')}</td>
             <td style="text-align: right;">
-              <button class="btn btn-danger btn-sm" data-kick-listener="${id}">KICK</button>
+              <button class="btn btn-danger btn-sm" data-kick-listener="${l.id}">KICK</button>
             </td>
           </tr>
         `).join('')}
@@ -302,13 +365,13 @@ async function kickSource(path) {
   const slug = path.replace(/^\//, '');
   const r = await fetch(`/api/mounts/${encodeURIComponent(slug)}/source`, { method: 'DELETE' });
   if (r.status === 401) { enterLogin(); return; }
-  refreshAdmin();
+  refreshCurrent();
 }
 
 async function kickListener(id) {
   const r = await fetch(`/api/listeners/${id}`, { method: 'DELETE' });
   if (r.status === 401) { enterLogin(); return; }
-  refreshAdmin();
+  refreshCurrent();
 }
 
 async function setTitle(path) {
@@ -329,14 +392,14 @@ async function setTitle(path) {
     errEl.classList.remove('hidden');
     return;
   }
-  refreshAdmin();
+  refreshCurrent();
 }
 
 async function clearTitle(path) {
   const slug = path.replace(/^\//, '');
   const r = await fetch(`/api/mounts/${encodeURIComponent(slug)}/title`, { method: 'DELETE' });
   if (r.status === 401) { enterLogin(); return; }
-  refreshAdmin();
+  refreshCurrent();
 }
 
 // ─── login form ────────────────────────────────────────────────────────
@@ -373,13 +436,15 @@ $('login-cancel').addEventListener('click', (ev) => {
   enterLanding();
 });
 
-$('logout-btn').addEventListener('click', async (ev) => {
+async function doLogout(ev) {
   ev.preventDefault();
   await fetch('/api/logout', { method: 'POST' });
   state.user = null;
   location.hash = '';
   enterLanding();
-});
+}
+$('logout-btn').addEventListener('click', doLogout);
+$('detail-logout-btn').addEventListener('click', doLogout);
 
 // ─── boot ──────────────────────────────────────────────────────────────
 window.addEventListener('hashchange', route);
