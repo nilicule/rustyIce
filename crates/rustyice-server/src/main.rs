@@ -27,6 +27,8 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    print_banner();
+
     let config_path = parse_config_arg().unwrap_or_else(|| PathBuf::from("config.toml"));
     let cfg = config::load(&config_path)?;
 
@@ -139,6 +141,34 @@ fn parse_config_arg() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
     let pos = args.iter().position(|a| a == "--config")?;
     args.get(pos + 1).map(PathBuf::from)
+}
+
+const BANNER_ART: &str = "\
+██████╗ ██╗   ██╗███████╗████████╗██╗   ██╗██╗ ██████╗███████╗
+██╔══██╗██║   ██║██╔════╝╚══██╔══╝╚██╗ ██╔╝██║██╔════╝██╔════╝
+██████╔╝██║   ██║███████╗   ██║    ╚████╔╝ ██║██║     █████╗
+██╔══██╗██║   ██║╚════██║   ██║     ╚██╔╝  ██║██║     ██╔══╝
+██║  ██║╚██████╔╝███████║   ██║      ██║   ██║╚██████╗███████╗
+╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝      ╚═╝   ╚═╝ ╚═════╝╚══════╝";
+
+/// Print a startup banner. Skipped when stdout is not a TTY (e.g. piped to a
+/// log collector) so structured-log consumers aren't fed ASCII art. Honors
+/// `NO_COLOR` per <https://no-color.org/>.
+fn print_banner() {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let (cyan, dim, reset) = if std::env::var_os("NO_COLOR").is_none() {
+        ("\x1b[38;2;74;144;226m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    println!("\n{cyan}{BANNER_ART}{reset}");
+    println!(
+        "{dim}icecast-compatible mp3 streaming · pure rust · v{}{reset}\n",
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 fn setup_tracing(cfg: &Config) {

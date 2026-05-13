@@ -1,0 +1,10 @@
+[package]
+name = "rustyice-loadtest"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio   = { workspace = true }
+clap    = { version = "4", features = ["derive"] }
+anyhow  = "1"
