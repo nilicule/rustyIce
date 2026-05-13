@@ -123,9 +123,11 @@ mod tests {
                     description: None,
                     genre: None,
                     url: None,
+                    transcode: None,
                 })
                 .collect(),
             tls: None,
+            transcode: None,
         }
     }
 

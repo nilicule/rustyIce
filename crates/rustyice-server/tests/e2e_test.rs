@@ -56,8 +56,10 @@ async fn build_test_server_with(
             description: None,
             genre: None,
             url: None,
+            transcode: None,
         }],
         tls: None,
+        transcode: None,
     };
 
     let mounts = MountRegistry::new();

@@ -145,8 +145,10 @@ mod tests {
                 description: None,
                 genre: None,
                 url: None,
+                transcode: None,
             }],
             tls: None,
+            transcode: None,
         }
     }
 
