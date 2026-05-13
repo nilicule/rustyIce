@@ -72,14 +72,20 @@ pub struct StreamDecoder {
     inner: Option<DecoderInner>,
 }
 
-impl StreamDecoder {
-    pub fn new() -> Self {
+impl Default for StreamDecoder {
+    fn default() -> Self {
         Self {
             buf: Arc::new(Mutex::new(PipeBuf { data: VecDeque::new(), eof: false })),
             pending: Vec::new(),
             frame_staging: Vec::new(),
             inner: None,
         }
+    }
+}
+
+impl StreamDecoder {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Push raw bytes from the source. Returns (interleaved_f32, sample_rate, channels).

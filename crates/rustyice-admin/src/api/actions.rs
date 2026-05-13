@@ -11,6 +11,8 @@ pub struct ActionResult {
     pub message: String,
 }
 
+/// # Panics
+/// Panics if the `source_cancel` mutex is poisoned.
 pub async fn kick_source(
     State(state): State<AdminState>,
     Path(mount_path): Path<String>,

@@ -56,10 +56,10 @@ pub fn scan_bitrate_bps(data: &[u8]) -> Option<u64> {
         if data[i] != 0xFF || (data[i + 1] & 0xE0) != 0xE0 {
             continue;
         }
-        if let Some(info) = codec.probe(&data[i..]) {
-            if let Some(kbps) = info.bitrate_kbps {
-                return Some(kbps as u64 * 1000 / 8);
-            }
+        if let Some(info) = codec.probe(&data[i..])
+            && let Some(kbps) = info.bitrate_kbps
+        {
+            return Some(u64::from(kbps) * 1000 / 8);
         }
     }
     None
@@ -135,8 +135,7 @@ pub fn detect_xing_frame_end(data: &[u8]) -> Option<usize> {
         // depends on MPEG version and channel mode.
         let tag_offset = match (mpeg1, info.channels) {
             (true, 2) => 4 + 32,
-            (true, 1) => 4 + 17,
-            (false, 2) => 4 + 17,
+            (true, 1) | (false, 2) => 4 + 17,
             (false, 1) => 4 + 9,
             _ => return None,
         };

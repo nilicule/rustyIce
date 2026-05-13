@@ -17,6 +17,7 @@ pub struct Config {
 
 impl Config {
     /// Returns the effective transcode config for `mount`: per-mount takes precedence over global.
+    #[must_use]
     pub fn effective_transcode<'a>(&'a self, mount: &'a MountConfig) -> Option<&'a TranscodeConfig> {
         mount.transcode.as_ref().or(self.transcode.as_ref())
     }
