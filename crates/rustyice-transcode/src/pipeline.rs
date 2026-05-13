@@ -244,19 +244,18 @@ mod tests {
         // Now feed through pipeline in small chunks
         let mut pipeline = TranscodePipeline::new(test_config()).unwrap();
         let mut all_output = Vec::new();
+        let mut error_count = 0usize;
         for chunk in mp3_data.chunks(4096) {
             match pipeline.push(chunk) {
                 Ok(out) => all_output.extend_from_slice(&out),
-                Err(e) => {
-                    // Decode errors on synthetic frames are acceptable;
-                    // just check that the pipeline doesn't panic.
-                    eprintln!("transcode error (acceptable in unit test): {e}");
-                }
+                Err(_) => error_count += 1,
             }
         }
         if let Ok(tail) = pipeline.flush() {
             all_output.extend_from_slice(&tail);
         }
+
+        assert_eq!(error_count, 0, "pipeline produced unexpected errors");
 
         // Output must be non-empty and contain valid MP3 sync words.
         assert!(!all_output.is_empty(), "pipeline must produce output from 5 seconds of audio");
@@ -277,10 +276,7 @@ mod tests {
         let mut mp3_48k: Vec<u8> = enc.encode(&silence).unwrap();
         mp3_48k.extend_from_slice(&enc.flush().unwrap());
 
-        if mp3_48k.is_empty() {
-            // LAME produced nothing for silence — skip this test
-            return;
-        }
+        assert!(!mp3_48k.is_empty(), "LAME produced no output — encoder broken or environment misconfigured");
 
         // Pipeline targeting 44100 Hz — resampler should activate
         let mut pipeline = TranscodePipeline::new(TranscodeConfig {
@@ -315,12 +311,14 @@ mod tests {
         use mp3lame_sys::*;
         unsafe {
             let gfp = lame_init();
+            assert!(!gfp.is_null(), "lame_init failed");
             lame_set_in_samplerate(gfp, 44100);
             lame_set_out_samplerate(gfp, 44100);
             lame_set_num_channels(gfp, 2);
             lame_set_VBR(gfp, vbr_mode::vbr_default);
             lame_set_VBR_quality(gfp, 5.0);
-            lame_init_params(gfp);
+            let ret = lame_init_params(gfp);
+            assert!(ret >= 0, "lame_init_params failed: {ret}");
 
             let num_samples = 44100; // 1 second per channel
             let silence_l = vec![0.0f32; num_samples];
@@ -348,9 +346,7 @@ mod tests {
         // Generate a real VBR MP3 with a Xing header
         let mp3_data = generate_vbr_mp3();
 
-        if mp3_data.is_empty() {
-            return; // Nothing to test
-        }
+        assert!(!mp3_data.is_empty(), "LAME produced no output — encoder broken or environment misconfigured");
 
         let mut pipeline = TranscodePipeline::new(TranscodeConfig {
             format: TranscodeFormat::Mp3,
@@ -372,12 +368,9 @@ mod tests {
             all_output.extend_from_slice(&tail);
         }
 
-        // Tolerate some errors (silence frames may not decode cleanly),
-        // but not every single chunk should fail
-        assert!(
-            error_count < mp3_data.chunks(512).count(),
-            "every chunk failed to transcode — check pipeline logic"
-        );
+        assert_eq!(error_count, 0, "pipeline produced errors on VBR input");
+
+        assert!(!all_output.is_empty(), "transcoded VBR stream produced no output");
 
         // The transcoded output must NOT contain a Xing/Info VBR header,
         // since re-encoding via LAME for streaming does not insert one.
