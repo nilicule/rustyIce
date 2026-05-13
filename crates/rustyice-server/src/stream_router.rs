@@ -45,6 +45,24 @@ async fn source_handler(
         Err(resp) => return resp,
     };
 
+    // Reject non-MP3 sources on transcode-enabled mounts. The transcode pipeline
+    // only handles MP3 input; accepting other codecs would produce a silent stream.
+    {
+        let cfg = state.config.load();
+        let transcode = if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
+            cfg.effective_transcode(mc).cloned()
+        } else {
+            cfg.transcode.clone()
+        };
+        if transcode.is_some() && codec != CodecId::MP3 {
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                format!("mount {mount_path} requires MP3 source (transcoding is enabled)"),
+            )
+                .into_response();
+        }
+    }
+
     if mount
         .source_connected
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -266,11 +284,22 @@ async fn listener_handler(
 
     let stream = tokio_util::io::ReaderStream::new(read_end);
 
+    let icy_br = {
+        let transcode = if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
+            cfg.effective_transcode(mc).cloned()
+        } else {
+            cfg.transcode.clone()
+        };
+        transcode
+            .map(|tc| tc.bitrate_kbps.to_string())
+            .unwrap_or_else(|| "128".to_string())
+    };
+
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "audio/mpeg")
         .header("icy-name", mount.info.load().metadata.name.as_deref().unwrap_or(""))
-        .header("icy-br", "128");
+        .header("icy-br", icy_br);
 
     if icy_requested {
         builder = builder.header("icy-metaint", "8192");

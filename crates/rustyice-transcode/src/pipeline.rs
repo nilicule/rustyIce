@@ -84,10 +84,18 @@ impl TranscodePipeline {
             return Ok(Bytes::new());
         }
 
+        let mut output: Vec<u8> = Vec::new();
+
         // Rebuild encoder if source format differs from what encoder expects
         if self.source_sample_rate != Some(sample_rate) || self.source_channels != Some(channels) {
             self.source_sample_rate = Some(sample_rate);
             self.source_channels = Some(channels);
+            // Flush the old encoder's internal LAME buffer tail before replacing it.
+            if let Ok(tail) = self.encoder.flush() {
+                if !tail.is_empty() {
+                    output.extend_from_slice(&tail);
+                }
+            }
             self.encoder = LameEncoder::new(
                 self.config.sample_rate, // in_sample_rate = target (we resample before encode)
                 self.config.sample_rate,
@@ -112,11 +120,16 @@ impl TranscodePipeline {
         };
 
         if pcm.is_empty() {
-            return Ok(Bytes::new());
+            return if output.is_empty() {
+                Ok(Bytes::new())
+            } else {
+                Ok(Bytes::from(output))
+            };
         }
 
         let encoded = self.encoder.encode(&pcm)?;
-        Ok(Bytes::from(encoded))
+        output.extend_from_slice(&encoded);
+        Ok(Bytes::from(output))
     }
 }
 
