@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use rustyice_core::config::TranscodeConfig;
 use rustyice_core::error::IngestError;
 use rustyice_core::traits::{BroadcastBus, IngestProtocol};
 use rustyice_core::types::{AudioPayload, CodecId, EncodedPacket, SourceStats, StreamPacket};
+use rustyice_transcode::TranscodePipeline;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,18 +16,26 @@ pub struct IcecastIngest {
     chunk_size: usize,
     /// If set, reads are paced to this rate. TCP backpressure slows the sender.
     max_rate_bps: Option<u64>,
+    transcode: Option<TranscodeConfig>,
 }
 
 impl IcecastIngest {
     #[must_use]
     pub fn new(chunk_size: usize) -> Self {
-        Self { chunk_size, max_rate_bps: None }
+        Self { chunk_size, max_rate_bps: None, transcode: None }
     }
 
     /// Set a maximum ingestion rate (bytes/sec). Returns `self` for chaining.
     #[must_use]
     pub fn with_max_rate(mut self, bps: u64) -> Self {
         self.max_rate_bps = Some(bps);
+        self
+    }
+
+    /// Enable transcoding for this ingest. Returns `self` for chaining.
+    #[must_use]
+    pub fn with_transcode(mut self, config: TranscodeConfig) -> Self {
+        self.transcode = Some(config);
         self
     }
 }
@@ -49,6 +59,12 @@ impl IngestProtocol for IcecastIngest {
         codec: CodecId,
         cancellation: CancellationToken,
     ) -> Result<SourceStats, IngestError> {
+        let mut pipeline: Option<TranscodePipeline> = self.transcode
+            .as_ref()
+            .map(|cfg| TranscodePipeline::new(cfg.clone()))
+            .transpose()
+            .map_err(|e| IngestError::TranscodeInit(e.to_string()))?;
+
         let mut stats = SourceStats::default();
         let start = Instant::now();
         // Rate in bytes/sec: manual override takes priority, otherwise
@@ -91,6 +107,25 @@ impl IngestProtocol for IcecastIngest {
                 }
                 chunk = data_rx.recv() => {
                     let Some(data) = chunk else {
+                        // source disconnected — flush pipeline tail
+                        if let Some(ref mut p) = pipeline {
+                            match p.flush() {
+                                Ok(tail) if !tail.is_empty() => {
+                                    let packet = Arc::new(StreamPacket {
+                                        payload: AudioPayload::Encoded(EncodedPacket {
+                                            codec: codec.clone(),
+                                            data: tail,
+                                        }),
+                                        pts: start.elapsed(),
+                                        sequence: stats.packets_published,
+                                    });
+                                    bus.publish(packet);
+                                    stats.packets_published += 1;
+                                }
+                                Ok(_) => {}
+                                Err(e) => warn!("transcode flush error: {e}"),
+                            }
+                        }
                         debug!("source disconnected after {} packets", stats.packets_published);
                         break Ok(());
                     };
@@ -105,16 +140,32 @@ impl IngestProtocol for IcecastIngest {
                     }
 
                     stats.bytes_received += n as u64;
-                    let packet = Arc::new(StreamPacket {
-                        payload: AudioPayload::Encoded(EncodedPacket {
-                            codec: codec.clone(),
-                            data: Bytes::from(data),
-                        }),
-                        pts: start.elapsed(),
-                        sequence: stats.packets_published,
-                    });
-                    bus.publish(packet);
-                    stats.packets_published += 1;
+
+                    let packet_data: Option<Bytes> = if let Some(ref mut p) = pipeline {
+                        match p.push(&data) {
+                            Ok(b) if b.is_empty() => None,
+                            Ok(b) => Some(b),
+                            Err(e) => {
+                                warn!("transcode error, dropping packet: {e}");
+                                None
+                            }
+                        }
+                    } else {
+                        Some(Bytes::from(data))
+                    };
+
+                    if let Some(data) = packet_data {
+                        let packet = Arc::new(StreamPacket {
+                            payload: AudioPayload::Encoded(EncodedPacket {
+                                codec: codec.clone(),
+                                data,
+                            }),
+                            pts: start.elapsed(),
+                            sequence: stats.packets_published,
+                        });
+                        bus.publish(packet);
+                        stats.packets_published += 1;
+                    }
 
                     if let Some(bps) = rate {
                         let target = Duration::from_secs_f64(

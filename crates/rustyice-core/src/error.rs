@@ -16,6 +16,8 @@ pub enum IngestError {
     MountBusy,
     #[error("ingest cancelled")]
     Cancelled,
+    #[error("transcode init failed: {0}")]
+    TranscodeInit(String),
 }
 
 #[derive(Debug, Error)]
