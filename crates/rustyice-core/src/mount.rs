@@ -52,6 +52,9 @@ pub struct ActiveMount {
     /// Cancellation token for the active source task.
     /// Set to `Some` when a source connects; the admin API cancels it to kick the source.
     pub source_cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// Runtime now-playing title set via admin API. Lock-free read on the
+    /// listener hot path. `None` = use `info.metadata.name` fallback.
+    pub current_title: Arc<ArcSwap<Option<String>>>,
 }
 
 impl ActiveMount {
@@ -63,6 +66,7 @@ impl ActiveMount {
             connected_at: Mutex::new(None),
             stats: Arc::new(MountStats::default()),
             source_cancel: std::sync::Mutex::new(None),
+            current_title: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 
@@ -236,5 +240,30 @@ mod tests {
         new_info.source_password = "new_secret".to_string();
         mount.info.store(Arc::new(new_info));
         assert_eq!(mount.info.load().source_password, "new_secret");
+    }
+
+    #[test]
+    fn current_title_defaults_to_none() {
+        let mount = ActiveMount::new(make_mount_info("/stream"), Arc::new(MockBus));
+        assert!(mount.current_title.load().is_none());
+    }
+
+    #[test]
+    fn current_title_can_be_set_and_cleared() {
+        let mount = ActiveMount::new(make_mount_info("/stream"), Arc::new(MockBus));
+        mount.current_title.store(Arc::new(Some("Artist - Song".to_string())));
+        assert_eq!(mount.current_title.load().as_deref(), Some("Artist - Song"));
+        mount.current_title.store(Arc::new(None));
+        assert!(mount.current_title.load().is_none());
+    }
+
+    #[test]
+    fn current_title_survives_info_hot_swap() {
+        let mount = ActiveMount::new(make_mount_info("/stream"), Arc::new(MockBus));
+        mount.current_title.store(Arc::new(Some("persisting".to_string())));
+        let mut new_info = make_mount_info("/stream");
+        new_info.source_password = "rotated".to_string();
+        mount.info.store(Arc::new(new_info));
+        assert_eq!(mount.current_title.load().as_deref(), Some("persisting"));
     }
 }
