@@ -283,3 +283,36 @@ async fn metrics_endpoint_returns_prometheus_text() {
         .unwrap_or("");
     assert!(ct.contains("text/plain"));
 }
+
+#[tokio::test]
+async fn get_mounts_exposes_title_field_default_null() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/api/mounts").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json[0].as_object().unwrap().contains_key("title"));
+    assert!(json[0]["title"].is_null(), "title defaults to null");
+}
+
+#[tokio::test]
+async fn get_mounts_reflects_admin_set_title() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    // Reach into the registry and set a title directly.
+    let mount = state.mounts.get("/stream").unwrap();
+    mount.current_title.store(Arc::new(Some("Now Playing".to_string())));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/api/mounts").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json[0]["title"], "Now Playing");
+}
