@@ -204,6 +204,14 @@ a.stream-row:hover .stream-path::before {
   color: var(--fg-muted);
   font-family: var(--mono);
 }
+.stream-title {
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .stream-listeners {
   font-family: var(--mono);
   font-size: .85rem;

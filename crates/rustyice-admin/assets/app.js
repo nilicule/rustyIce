@@ -104,6 +104,7 @@ async function refreshLanding() {
           <div class="stream-meta">
             <span class="stream-path">${escapeHtml(m.path)}</span>
             ${m.name ? `<span class="stream-name">${escapeHtml(m.name)}</span>` : ''}
+            ${m.title ? `<span class="stream-title">♪ ${escapeHtml(m.title)}</span>` : ''}
           </div>
           <span class="stream-listeners">
             <span class="live-dot"></span>${m.listener_count}
