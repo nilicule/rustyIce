@@ -87,6 +87,7 @@ pub trait OutputProtocol: Send + Sync + 'static {
         writer: Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>,
         subscription: Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send>>,
         mount_info: Arc<crate::mount::MountInfo>,
+        current_title: Arc<arc_swap::ArcSwap<Option<String>>>,
         icy_requested: bool,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<ListenerStats, OutputError>;

@@ -33,6 +33,7 @@ impl OutputProtocol for HttpPassthroughOutput {
         mut writer: Pin<Box<dyn AsyncWrite + Send + Unpin>>,
         mut subscription: Pin<Box<dyn futures::Stream<Item = Arc<StreamPacket>> + Send>>,
         mount_info: Arc<MountInfo>,
+        _current_title: Arc<arc_swap::ArcSwap<Option<String>>>,
         icy_requested: bool,
         cancellation: CancellationToken,
     ) -> Result<ListenerStats, OutputError> {
@@ -147,6 +148,10 @@ mod tests {
         })
     }
 
+    fn empty_title() -> Arc<arc_swap::ArcSwap<Option<String>>> {
+        Arc::new(arc_swap::ArcSwap::from_pointee(None))
+    }
+
     fn make_mount_info(name: Option<&str>) -> Arc<MountInfo> {
         Arc::new(MountInfo {
             path: "/stream".to_string(),
@@ -171,7 +176,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(payload)]));
 
         let stats = HttpPassthroughOutput::default()
-            .run(writer, subscription, make_mount_info(None), false, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(None), empty_title(), false, CancellationToken::new())
             .await
             .unwrap();
 
@@ -190,7 +195,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(&payload)]));
 
         HttpPassthroughOutput { icy_metaint: 8 }
-            .run(writer, subscription, make_mount_info(Some("Test")), true, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(Some("Test")), empty_title(), true, CancellationToken::new())
             .await
             .unwrap();
 
@@ -211,7 +216,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(&[0u8; 4])]));
 
         HttpPassthroughOutput { icy_metaint: 4 }
-            .run(writer, subscription, make_mount_info(None), true, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(None), empty_title(), true, CancellationToken::new())
             .await
             .unwrap();
 
@@ -231,7 +236,7 @@ mod tests {
         let token_clone = token.clone();
         let handle = tokio::spawn(async move {
             HttpPassthroughOutput::default()
-                .run(writer, subscription, make_mount_info(None), false, token_clone)
+                .run(writer, subscription, make_mount_info(None), empty_title(), false, token_clone)
                 .await
         });
         tokio::time::sleep(Duration::from_millis(10)).await;

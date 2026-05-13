@@ -249,6 +249,7 @@ async fn listener_handler(
         .is_some_and(|v| v.trim() == "1");
 
     let mount_info = mount.info.load_full();
+    let current_title = mount.current_title.clone();
     let subscription = mount.bus.subscribe();
 
     let listener_cancel = state.shutdown.child_token();
@@ -266,7 +267,7 @@ async fn listener_handler(
 
     tokio::spawn(async move {
         match output
-            .run(writer, subscription, mount_info, icy_requested, cancel_clone)
+            .run(writer, subscription, mount_info, current_title, icy_requested, cancel_clone)
             .await
         {
             Ok(stats) => {
