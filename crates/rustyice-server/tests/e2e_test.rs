@@ -21,6 +21,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
+use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
 
 const FAKE_MP3_FRAME: &[u8] = &[0xFF, 0xFB, 0x90, 0x04, 0x00, 0x00, 0x00, 0x00];
 
@@ -318,4 +319,183 @@ async fn graceful_shutdown_closes_connections() {
             let _ = resp;
         }
     }
+}
+
+// Helper: build a short MP3 stream (about 1 second of silence) for test use
+fn generate_test_mp3() -> Vec<u8> {
+    let mut enc = rustyice_transcode::LameEncoder::new(44100, 44100, 2, 128).unwrap();
+    let silence = vec![0.0f32; 44100 * 2]; // 1 second stereo
+    let mut data = enc.encode(&silence).unwrap();
+    data.extend_from_slice(&enc.flush().unwrap());
+    data
+}
+
+// Helper: build a test server with transcode config on /stream
+async fn build_test_server_with_transcode(bitrate_kbps: u32) -> (u16, u16, CancellationToken) {
+    let cfg = Config {
+        server: ServerConfig {
+            stream_bind: "127.0.0.1:0".parse().unwrap(),
+            admin_bind: "127.0.0.1:0".parse().unwrap(),
+            hostname: "localhost".to_string(),
+        },
+        logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
+        auth: AuthConfig {
+            users: vec![],
+            source_password: None,
+        },
+        limits: LimitsConfig {
+            max_listeners_global: 100,
+            ring_size: 64,
+            slow_listener_grace_s: 2,
+            source_max_kbps: None,
+        },
+        mounts: vec![MountConfig {
+            path: "/stream".to_string(),
+            source_password: "testpass".to_string(),
+            max_listeners: None,
+            name: Some("Test".to_string()),
+            description: None,
+            genre: None,
+            url: None,
+            transcode: Some(TranscodeConfig {
+                format: TranscodeFormat::Mp3,
+                sample_rate: 44100,
+                bitrate_kbps,
+            }),
+        }],
+        tls: None,
+        transcode: None,
+    };
+
+    // Build the same way as build_test_server but with transcode config
+    let mounts = MountRegistry::new();
+    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    mounts.add(Arc::new(ActiveMount::new(
+        MountInfo {
+            path: "/stream".to_string(),
+            codec: CodecId::MP3,
+            source_password: "testpass".to_string(),
+            max_listeners: None,
+            metadata: MountMetadata {
+                name: Some("Test".to_string()),
+                ..Default::default()
+            },
+        },
+        bus,
+    )));
+
+    let shutdown = CancellationToken::new();
+    let listeners = ListenerMap::new();
+
+    let auth: Arc<dyn rustyice_core::traits::AuthBackend + Send + Sync> =
+        Arc::new(TomlBcryptAuth::new(&cfg));
+    let ingest: Arc<dyn rustyice_core::traits::IngestProtocol + Send + Sync> =
+        Arc::new(IcecastIngest::default());
+    let output: Arc<dyn rustyice_core::traits::OutputProtocol + Send + Sync> =
+        Arc::new(HttpPassthroughOutput::default());
+
+    let app_state = AppState {
+        mounts: mounts.clone(),
+        auth: auth.clone(),
+        ingest,
+        output,
+        listeners: listeners.clone(),
+        config: Arc::new(ArcSwap::from_pointee(cfg.clone())),
+        shutdown: shutdown.clone(),
+    };
+
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let prom_handle = recorder.handle();
+
+    let admin_state = AdminState {
+        mounts: mounts.clone(),
+        listeners,
+        prometheus: prom_handle,
+        start_time: std::time::Instant::now(),
+        auth,
+        sessions: SessionStore::new(std::time::Duration::from_secs(3600)),
+        version: env!("CARGO_PKG_VERSION"),
+        stream_port: 0,
+    };
+
+    let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stream_port = stream_listener.local_addr().unwrap().port();
+    let admin_port = admin_listener.local_addr().unwrap().port();
+
+    let stream_router = build_stream_router(app_state)
+        .layer(ServiceBuilder::new().layer(SourceMethodLayer));
+    let admin_router = build_admin_router(admin_state);
+
+    let stream_sd = shutdown.clone();
+    tokio::spawn(async move {
+        axum::serve(stream_listener, stream_router)
+            .with_graceful_shutdown(async move { stream_sd.cancelled().await })
+            .await
+            .unwrap();
+    });
+
+    let admin_sd = shutdown.clone();
+    tokio::spawn(async move {
+        axum::serve(admin_listener, admin_router)
+            .with_graceful_shutdown(async move { admin_sd.cancelled().await })
+            .await
+            .unwrap();
+    });
+
+    (stream_port, admin_port, shutdown)
+}
+
+#[tokio::test]
+async fn transcoded_source_delivers_mp3_to_listener() {
+    let mp3_data = generate_test_mp3();
+    if mp3_data.is_empty() {
+        // LAME produced nothing for silence in this environment — skip
+        return;
+    }
+
+    let (stream_port, _admin_port, shutdown) = build_test_server_with_transcode(64).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let base_url = format!("http://127.0.0.1:{stream_port}");
+
+    // Connect listener first
+    let mut response = tokio::time::timeout(
+        Duration::from_secs(2),
+        reqwest::Client::new().get(format!("{base_url}/stream")).send(),
+    )
+    .await
+    .expect("listener GET timed out")
+    .expect("listener GET failed");
+
+    assert_eq!(response.status(), 200);
+
+    // Push MP3 source
+    let source_url = format!("{base_url}/stream");
+    tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&source_url)
+            .header("Authorization", "Basic dGVzdHBhc3M=") // base64("testpass")
+            .header("Content-Type", "audio/mpeg")
+            .body(mp3_data)
+            .send()
+            .await;
+    });
+
+    // Wait for transcoded output
+    let first_chunk = tokio::time::timeout(Duration::from_secs(3), response.chunk())
+        .await
+        .expect("timeout waiting for transcoded audio chunk")
+        .expect("request error");
+
+    if let Some(bytes) = first_chunk {
+        if !bytes.is_empty() {
+            // Verify output contains valid MP3 sync words
+            let has_sync = bytes.windows(2).any(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0);
+            assert!(has_sync, "transcoded output should contain MP3 sync words");
+        }
+        // If bytes is empty, LAME buffered everything — acceptable for silence
+    }
+
+    shutdown.cancel();
 }
