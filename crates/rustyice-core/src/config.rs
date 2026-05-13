@@ -11,6 +11,14 @@ pub struct Config {
     pub mounts: Vec<MountConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcode: Option<TranscodeConfig>,
+}
+
+impl Config {
+    pub fn effective_transcode<'a>(&'a self, mount: &'a MountConfig) -> Option<&'a TranscodeConfig> {
+        mount.transcode.as_ref().or(self.transcode.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -78,6 +86,21 @@ pub struct MountConfig {
     pub genre: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcode: Option<TranscodeConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscodeFormat {
+    Mp3,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TranscodeConfig {
+    pub format: TranscodeFormat,
+    pub sample_rate: u32,
+    pub bitrate_kbps: u32,
 }
 
 /// Reserved for v2 ACME / Let's Encrypt support. Parsed but unused in v1.
@@ -219,5 +242,102 @@ source_password = "secret"
         let cfg2: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(cfg.server.hostname, cfg2.server.hostname);
         assert_eq!(cfg.mounts[0].path, cfg2.mounts[0].path);
+    }
+
+    const BASE_CONFIG: &str = r#"
+[server]
+stream_bind = "0.0.0.0:8000"
+admin_bind  = "127.0.0.1:8001"
+hostname    = "localhost"
+
+[logging]
+level  = "info"
+format = "json"
+
+[auth]
+
+[limits]
+max_listeners_global  = 500
+ring_size             = 64
+slow_listener_grace_s = 2
+"#;
+
+    #[test]
+    fn transcode_config_parses_global() {
+        let src = format!(
+            r#"{}
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+"#,
+            BASE_CONFIG
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let tc = cfg.transcode.as_ref().unwrap();
+        assert_eq!(tc.format, TranscodeFormat::Mp3);
+        assert_eq!(tc.sample_rate, 44100);
+        assert_eq!(tc.bitrate_kbps, 128);
+    }
+
+    #[test]
+    fn transcode_config_per_mount_overrides_global() {
+        let src = format!(
+            r#"{}
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+
+[[mounts]]
+path            = "/stream"
+source_password = "secret"
+
+[mounts.transcode]
+format       = "mp3"
+sample_rate  = 22050
+bitrate_kbps = 64
+"#,
+            BASE_CONFIG
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let effective = cfg.effective_transcode(&cfg.mounts[0]).unwrap();
+        assert_eq!(effective.sample_rate, 22050);
+        assert_eq!(effective.bitrate_kbps, 64);
+    }
+
+    #[test]
+    fn transcode_config_falls_back_to_global() {
+        let src = format!(
+            r#"{}
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+
+[[mounts]]
+path            = "/stream"
+source_password = "secret"
+"#,
+            BASE_CONFIG
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let effective = cfg.effective_transcode(&cfg.mounts[0]).unwrap();
+        assert_eq!(effective.sample_rate, 44100);
+        assert_eq!(effective.bitrate_kbps, 128);
+    }
+
+    #[test]
+    fn transcode_config_none_when_absent() {
+        let src = format!(
+            r#"{}
+[[mounts]]
+path            = "/stream"
+source_password = "secret"
+"#,
+            BASE_CONFIG
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        assert!(cfg.effective_transcode(&cfg.mounts[0]).is_none());
     }
 }
