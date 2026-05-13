@@ -145,7 +145,9 @@ async function refreshAdmin() {
       })
     );
 
-    renderAdminMounts(detail);
+    if (!updateAdminMountsInPlace(detail)) {
+      renderAdminMounts(detail);
+    }
   } catch (e) {
     console.error('admin refresh failed', e);
   }
@@ -158,7 +160,7 @@ function renderAdminMounts(rows) {
     return;
   }
   container.innerHTML = rows.map(({ mount: m, listeners }) => `
-    <div class="mount-card">
+    <div class="mount-card" data-mount-card="${escapeHtml(m.path)}" data-source-connected="${m.source_connected}">
       <div class="mount-card-head">
         <div>
           <div class="mount-path">${escapeHtml(m.path)}</div>
@@ -170,13 +172,13 @@ function renderAdminMounts(rows) {
         </div>
         <div class="mount-field">
           <span class="mount-field-label">SOURCE</span>
-          <span class="mount-field-value ${m.source_connected ? 'live' : ''}">
+          <span class="mount-field-value ${m.source_connected ? 'live' : ''}" data-source-value>
             ${m.source_connected ? `● LIVE · ${fmtUptime(m.source_uptime_secs)}` : 'offline'}
           </span>
         </div>
         <div class="mount-field">
           <span class="mount-field-label">LISTENERS</span>
-          <span class="mount-field-value">${m.listener_count}</span>
+          <span class="mount-field-value" data-listener-count>${m.listener_count}</span>
         </div>
         ${m.source_connected
           ? `<button class="btn btn-danger btn-sm" data-kick-source="${escapeHtml(m.path)}">KICK SOURCE</button>`
@@ -196,16 +198,16 @@ function renderAdminMounts(rows) {
         <button class="btn btn-ghost btn-sm" data-clear-title="${escapeHtml(m.path)}">CLEAR</button>
         <span class="mount-title-error error hidden" data-title-error="${escapeHtml(m.path)}"></span>
       </div>
-      ${m.source_connected ? renderListenersTable(listeners) : ''}
+      ${m.source_connected
+        ? `<div class="mount-listeners" data-listeners-area>${renderListenersTable(listeners)}</div>`
+        : ''}
     </div>
   `).join('');
 
   container.querySelectorAll('[data-kick-source]').forEach((btn) => {
     btn.addEventListener('click', () => kickSource(btn.dataset.kickSource));
   });
-  container.querySelectorAll('[data-kick-listener]').forEach((btn) => {
-    btn.addEventListener('click', () => kickListener(btn.dataset.kickListener));
-  });
+  bindKickListenerHandlers(container);
   container.querySelectorAll('[data-set-title]').forEach((btn) => {
     btn.addEventListener('click', () => setTitle(btn.dataset.setTitle));
   });
@@ -220,6 +222,57 @@ function renderAdminMounts(rows) {
       }
     });
   });
+}
+
+function bindKickListenerHandlers(root) {
+  root.querySelectorAll('[data-kick-listener]').forEach((btn) => {
+    btn.addEventListener('click', () => kickListener(btn.dataset.kickListener));
+  });
+}
+
+// Update existing mount cards in place. Returns false if the DOM structure
+// no longer matches the incoming rows (mount added/removed or a source flipped
+// between connected/offline) — caller should perform a full rebuild.
+function updateAdminMountsInPlace(rows) {
+  const container = $('admin-mounts');
+  const cards = container.querySelectorAll('.mount-card[data-mount-card]');
+  if (cards.length !== rows.length) return false;
+  for (let i = 0; i < rows.length; i++) {
+    const card = cards[i];
+    const { mount: m } = rows[i];
+    if (card.dataset.mountCard !== m.path) return false;
+    if (card.dataset.sourceConnected !== String(m.source_connected)) return false;
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const card = cards[i];
+    const { mount: m, listeners } = rows[i];
+
+    if (m.source_connected) {
+      const srcVal = card.querySelector('[data-source-value]');
+      if (srcVal) srcVal.textContent = `● LIVE · ${fmtUptime(m.source_uptime_secs)}`;
+    }
+
+    const lcVal = card.querySelector('[data-listener-count]');
+    if (lcVal) lcVal.textContent = String(m.listener_count);
+
+    const input = card.querySelector('.mount-title-input');
+    if (input && document.activeElement !== input) {
+      const next = m.title || '';
+      if (input.value !== next) input.value = next;
+    }
+
+    if (m.source_connected) {
+      const area = card.querySelector('[data-listeners-area]');
+      if (area) {
+        const next = renderListenersTable(listeners);
+        if (area.innerHTML !== next) {
+          area.innerHTML = next;
+          bindKickListenerHandlers(area);
+        }
+      }
+    }
+  }
+  return true;
 }
 
 function renderListenersTable(ids) {
