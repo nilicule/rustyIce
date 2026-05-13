@@ -67,7 +67,7 @@ impl PcmResampler {
 
         // Process any sub-chunk leftover samples first
         if !self.leftover.is_empty() && !self.leftover[0].is_empty() {
-            let partial: Vec<Vec<f32>> = self.leftover.iter().map(|ch| ch.clone()).collect();
+            let partial: Vec<Vec<f32>> = self.leftover.to_vec();
             let chunk_out = self
                 .inner
                 .process_partial(Some(partial.as_slice()), None)

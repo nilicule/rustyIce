@@ -46,6 +46,7 @@ impl Default for IcecastIngest {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl IngestProtocol for IcecastIngest {
     fn name(&self) -> &'static str {
@@ -78,7 +79,7 @@ impl IngestProtocol for IcecastIngest {
         // In passthrough mode we pace on source bytes at the detected source
         // bitrate (unchanged behaviour).
         let transcode_output_bps: Option<u64> = self.transcode.as_ref()
-            .map(|tc| tc.bitrate_kbps as u64 * 1000 / 8);
+            .map(|tc| u64::from(tc.bitrate_kbps) * 1000 / 8);
         let mut output_bytes: u64 = 0;
 
         // Source-rate tracking: used for passthrough pacing and as a fallback
@@ -145,12 +146,12 @@ impl IngestProtocol for IcecastIngest {
                     };
                     let n = data.len();
 
-                    if !source_rate_locked && codec == CodecId::MP3 {
-                        if let Some(bps) = rustyice_codec::mp3::scan_bitrate_bps(&data) {
-                            debug!("MP3 bitrate detected: {}kbps", bps * 8 / 1000);
-                            source_rate = Some(bps);
-                            source_rate_locked = true;
-                        }
+                    if !source_rate_locked && codec == CodecId::MP3
+                        && let Some(bps) = rustyice_codec::mp3::scan_bitrate_bps(&data)
+                    {
+                        debug!("MP3 bitrate detected: {}kbps", bps * 8 / 1000);
+                        source_rate = Some(bps);
+                        source_rate_locked = true;
                     }
 
                     stats.bytes_received += n as u64;
@@ -194,6 +195,7 @@ impl IngestProtocol for IcecastIngest {
                     };
 
                     if let Some(bps) = pacing_bps {
+                        #[allow(clippy::cast_precision_loss)]
                         let target = Duration::from_secs_f64(
                             pacing_bytes as f64 / bps as f64,
                         );
@@ -211,7 +213,7 @@ impl IngestProtocol for IcecastIngest {
                                     warn!("ingest I/O error: {e}");
                                     break Err(IngestError::Io(e));
                                 }
-                                () = tokio::time::sleep(target - elapsed) => {}
+                                () = tokio::time::sleep(target.checked_sub(elapsed).unwrap()) => {}
                             }
                         }
                     }
@@ -236,7 +238,7 @@ impl IngestProtocol for IcecastIngest {
 /// cancels `abort_token` so the publisher exits immediately instead of waiting
 /// for the queued chunks to drain at the paced rate.
 ///
-/// For MP3, strips any leading ID3v2 tag and Xing/Info/VBRI metadata frame.
+/// For MP3, strips any leading `ID3v2` tag and Xing/Info/VBRI metadata frame.
 /// Without this, embedded cover art makes the bitrate detector lock onto a
 /// false sync word inside the JPEG and pace the stream at the wrong rate, and
 /// the metadata frame makes live-streaming clients switch to file-mode buffering
@@ -294,7 +296,7 @@ enum ReadOutcome {
     Stop,
 }
 
-/// Reads enough of the MP3 stream to identify and skip any ID3v2 tag and
+/// Reads enough of the MP3 stream to identify and skip any `ID3v2` tag and
 /// Xing/Info/VBRI metadata frame at the start, then forwards the first chunk
 /// of real audio data. On return, subsequent reads from `reader` are pure
 /// audio data, ready for pass-through.
@@ -401,7 +403,7 @@ async fn read_one(
     }
 }
 
-/// Returns the total size (header + body) of an ID3v2 tag at the start of
+/// Returns the total size (header + body) of an `ID3v2` tag at the start of
 /// `data`, or 0 if no tag is present. `data` must be at least 10 bytes.
 fn parse_id3v2_total(data: &[u8]) -> usize {
     if data.len() < 10 || &data[..3] != b"ID3" {

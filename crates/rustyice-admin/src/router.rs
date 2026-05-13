@@ -1,4 +1,4 @@
-use crate::api::{actions, auth, mounts, stats};
+use crate::api::{actions, auth, mounts, stats, title};
 use crate::metrics::metrics_handler;
 use crate::state::AdminState;
 use axum::extract::Path;
@@ -6,7 +6,7 @@ use axum::http::{header, StatusCode};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use rust_embed::RustEmbed;
@@ -46,6 +46,8 @@ pub fn build_admin_router(state: AdminState) -> Router {
     let protected = Router::new()
         .route("/api/mounts/{path}/listeners", get(mounts::list_listeners))
         .route("/api/mounts/{path}/source", delete(actions::kick_source))
+        .route("/api/mounts/{path}/title", put(title::set_title))
+        .route("/api/mounts/{path}/title", delete(title::clear_title))
         .route("/api/listeners/{id}", delete(actions::kick_listener))
         .route("/api/logout", post(auth::logout))
         .route_layer(middleware::from_fn_with_state(

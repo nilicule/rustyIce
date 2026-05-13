@@ -204,6 +204,14 @@ a.stream-row:hover .stream-path::before {
   color: var(--fg-muted);
   font-family: var(--mono);
 }
+.stream-title {
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .stream-listeners {
   font-family: var(--mono);
   font-size: .85rem;
@@ -390,6 +398,33 @@ a.stream-row:hover .stream-path::before {
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--line-soft);
 }
+.mount-title-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: .75rem;
+  padding: .75rem 1.25rem;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-elev-2);
+}
+.mount-title-input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: .5rem .7rem;
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: .85rem;
+  outline: none;
+  transition: border-color 120ms ease;
+  min-width: 0;
+}
+.mount-title-input:focus { border-color: var(--accent); }
+.mount-title-error {
+  grid-column: 2 / -1;
+  margin: 0;
+  font-size: .75rem;
+}
 .mount-path { font-family: var(--mono); color: var(--fg); font-size: 1rem; }
 .mount-name { color: var(--fg-muted); font-size: .85rem; margin-top: .15rem; }
 .mount-field { display: flex; flex-direction: column; gap: .15rem; }
@@ -459,4 +494,9 @@ a.stream-row:hover .stream-path::before {
   .admin-stats { gap: 2rem; flex-wrap: wrap; }
   .mount-card-head { grid-template-columns: 1fr; gap: .8rem; }
   .admin-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+  .mount-title-row {
+    grid-template-columns: 1fr;
+    gap: .5rem;
+  }
+  .mount-title-error { grid-column: 1; }
 }

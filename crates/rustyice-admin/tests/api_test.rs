@@ -283,3 +283,276 @@ async fn metrics_endpoint_returns_prometheus_text() {
         .unwrap_or("");
     assert!(ct.contains("text/plain"));
 }
+
+#[tokio::test]
+async fn get_mounts_exposes_title_field_default_null() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/api/mounts").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json[0].as_object().unwrap().contains_key("title"));
+    assert!(json[0]["title"].is_null(), "title defaults to null");
+}
+
+#[tokio::test]
+async fn get_mounts_reflects_admin_set_title() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    // Reach into the registry and set a title directly.
+    let mount = state.mounts.get("/stream").unwrap();
+    mount.current_title.store(Arc::new(Some("Now Playing".to_string())));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/api/mounts").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json[0]["title"], "Now Playing");
+}
+
+#[tokio::test]
+async fn put_title_without_cookie_returns_401() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"title":"Hello"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn put_title_stores_value_and_returns_200() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let mount = state.mounts.get("/stream").unwrap();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"title":"Artist - Song"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored = mount.current_title.load_full();
+    assert_eq!(stored.as_deref(), Some("Artist - Song"));
+}
+
+#[tokio::test]
+async fn put_title_trims_whitespace() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let mount = state.mounts.get("/stream").unwrap();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"title":"   padded   "}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored = mount.current_title.load_full();
+    assert_eq!(stored.as_deref(), Some("padded"));
+}
+
+#[tokio::test]
+async fn put_title_empty_after_trim_clears_value() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let mount = state.mounts.get("/stream").unwrap();
+    mount.current_title.store(Arc::new(Some("preexisting".to_string())));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"title":"   "}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(mount.current_title.load().is_none());
+}
+
+#[tokio::test]
+async fn put_title_rejects_single_quote() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"title":"don't"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn put_title_rejects_newline() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from("{\"title\":\"line1\\nline2\"}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn put_title_rejects_carriage_return() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from("{\"title\":\"line1\\rline2\"}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn put_title_rejects_too_long() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let app = build_admin_router(state);
+    let long = "a".repeat(257);
+    let body = format!(r#"{{"title":"{long}"}}"#);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn put_title_on_unknown_mount_returns_404() {
+    let state = make_state();
+    let cookie = auth_cookie(&state);
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/nope/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"title":"Hi"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_title_clears_value() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let mount = state.mounts.get("/stream").unwrap();
+    mount.current_title.store(Arc::new(Some("preexisting".to_string())));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(mount.current_title.load().is_none());
+}
+
+#[tokio::test]
+async fn delete_title_without_cookie_returns_401() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/mounts/stream/title")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

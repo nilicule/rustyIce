@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ingest: Arc<dyn rustyice_core::traits::IngestProtocol + Send + Sync> = {
         let mut i = IcecastIngest::default();
         if let Some(kbps) = cfg.limits.source_max_kbps {
-            i = i.with_max_rate(kbps as u64 * 1000 / 8);
+            i = i.with_max_rate(u64::from(kbps) * 1000 / 8);
         }
         Arc::new(i)
     };

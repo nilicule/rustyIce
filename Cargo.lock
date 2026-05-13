@@ -1716,6 +1716,7 @@ dependencies = [
 name = "rustyice-output"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bytes",
  "futures",

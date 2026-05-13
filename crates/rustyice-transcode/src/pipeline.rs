@@ -88,10 +88,10 @@ impl TranscodePipeline {
             self.source_sample_rate = Some(sample_rate);
             self.source_channels = Some(channels);
             // Flush the old encoder's internal LAME buffer tail before replacing it.
-            if let Ok(tail) = self.encoder.flush() {
-                if !tail.is_empty() {
-                    output.extend_from_slice(&tail);
-                }
+            if let Ok(tail) = self.encoder.flush()
+                && !tail.is_empty()
+            {
+                output.extend_from_slice(&tail);
             }
             self.encoder = LameEncoder::new(
                 self.config.sample_rate, // in_sample_rate = target (we resample before encode)

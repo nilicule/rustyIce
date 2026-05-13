@@ -98,10 +98,10 @@ async fn source_handler(
 
     let result = ingest.run(reader, mount.bus.clone(), codec, source_cancel).await;
     match result {
-        Ok(stats) => {
+        Ok(source_stats) => {
             info!(
                 "source stream ended: mount={mount_path} bytes={} packets={}",
-                stats.bytes_received, stats.packets_published
+                source_stats.bytes_received, source_stats.packets_published
             );
             StatusCode::OK.into_response()
         }
@@ -113,7 +113,7 @@ async fn source_handler(
                 "transcoding unavailable",
             ).into_response()
         }
-        Err(IngestError::Io(_)) | Err(IngestError::Cancelled) | Err(IngestError::MountBusy) => {
+        Err(IngestError::Io(_) | IngestError::Cancelled | IngestError::MountBusy) => {
             StatusCode::OK.into_response()
         }
     }
@@ -184,7 +184,7 @@ fn build_ingest_for_mount(state: &AppState, mount_path: &str) -> IcecastIngest {
     let mut ingest = IcecastIngest::default();
 
     if let Some(kbps) = cfg.limits.source_max_kbps {
-        ingest = ingest.with_max_rate(kbps as u64 * 1000 / 8);
+        ingest = ingest.with_max_rate(u64::from(kbps) * 1000 / 8);
     }
     if let Some(tc) = transcode {
         ingest = ingest.with_transcode(tc);
@@ -249,6 +249,7 @@ async fn listener_handler(
         .is_some_and(|v| v.trim() == "1");
 
     let mount_info = mount.info.load_full();
+    let current_title = mount.current_title.clone();
     let subscription = mount.bus.subscribe();
 
     let listener_cancel = state.shutdown.child_token();
@@ -266,13 +267,13 @@ async fn listener_handler(
 
     tokio::spawn(async move {
         match output
-            .run(writer, subscription, mount_info, icy_requested, cancel_clone)
+            .run(writer, subscription, mount_info, current_title, icy_requested, cancel_clone)
             .await
         {
-            Ok(stats) => {
+            Ok(listener_stats) => {
                 tracing::info!(
                     "listener output ended: id={listener_id} bytes={} duration={:?} reason={:?}",
-                    stats.bytes_sent, stats.duration, stats.disconnect_reason,
+                    listener_stats.bytes_sent, listener_stats.duration, listener_stats.disconnect_reason,
                 );
             }
             Err(e) => {
@@ -290,9 +291,7 @@ async fn listener_handler(
         } else {
             cfg.transcode.clone()
         };
-        transcode
-            .map(|tc| tc.bitrate_kbps.to_string())
-            .unwrap_or_else(|| "128".to_string())
+        transcode.map_or_else(|| "128".to_string(), |tc| tc.bitrate_kbps.to_string())
     };
 
     let mut builder = Response::builder()
