@@ -41,9 +41,9 @@ impl LameEncoder {
         if samples.is_empty() {
             return Ok(vec![]);
         }
-        let num_samples_per_channel = (samples.len() / self.channels as usize) as i32;
+        let num_samples_per_channel = samples.len() / self.channels as usize;
         // LAME output buffer: 1.25 * num_samples + 7200 bytes per channel
-        let buf_size = (1.25 * num_samples_per_channel as f64) as usize + 7200;
+        let buf_size = (num_samples_per_channel * 5 / 4) + 7200;
         let mut output = vec![0u8; buf_size];
 
         let written = unsafe {
@@ -55,7 +55,7 @@ impl LameEncoder {
                     self.gfp,
                     left.as_ptr(),
                     right.as_ptr(),
-                    num_samples_per_channel,
+                    num_samples_per_channel as i32,
                     output.as_mut_ptr(),
                     buf_size as i32,
                 )
@@ -65,7 +65,7 @@ impl LameEncoder {
                     self.gfp,
                     samples.as_ptr(),
                     samples.as_ptr(),
-                    num_samples_per_channel,
+                    num_samples_per_channel as i32,
                     output.as_mut_ptr(),
                     buf_size as i32,
                 )

@@ -56,10 +56,21 @@ impl TranscodePipeline {
         self.transcode_pcm(&combined)
     }
 
-    /// Flush encoder's internal buffers at end of stream.
+    /// Flush resampler tail then encoder's internal buffers at end of stream.
     pub fn flush(&mut self) -> Result<Bytes, TranscodeError> {
-        let bytes = self.encoder.flush()?;
-        Ok(Bytes::from(bytes))
+        let mut combined = Vec::new();
+
+        if let Some(ref mut resampler) = self.resampler {
+            let tail_pcm = resampler.flush()?;
+            if !tail_pcm.is_empty() {
+                let encoded = self.encoder.encode(&tail_pcm)?;
+                combined.extend_from_slice(&encoded);
+            }
+        }
+
+        let flushed = self.encoder.flush()?;
+        combined.extend_from_slice(&flushed);
+        Ok(Bytes::from(combined))
     }
 
     fn transcode_pcm(&mut self, frame_data: &[u8]) -> Result<Bytes, TranscodeError> {
@@ -104,6 +115,17 @@ impl TranscodePipeline {
     }
 }
 
+fn mpeg_frame_size(header: &[u8], bitrate_kbps: u32, sample_rate: u32) -> usize {
+    let mpeg1 = header.len() >= 2 && (header[1] >> 3) & 0x03 == 0b11;
+    let padding = if header.len() >= 3 { ((header[2] >> 1) & 0x01) as usize } else { 0 };
+    let bitrate_bps = bitrate_kbps as usize * 1000;
+    if mpeg1 {
+        144 * bitrate_bps / sample_rate as usize + padding
+    } else {
+        72 * bitrate_bps / sample_rate as usize + padding
+    }
+}
+
 /// Scan `data` for complete MP3 frames. Returns (list_of_frame_byte_slices_owned, total_bytes_consumed).
 fn collect_complete_frames(data: &[u8]) -> (Vec<Vec<u8>>, usize) {
     use rustyice_codec::mp3::Mp3Codec;
@@ -126,28 +148,23 @@ fn collect_complete_frames(data: &[u8]) -> (Vec<Vec<u8>>, usize) {
         };
 
         let frame_end = if let Some(bitrate_kbps) = info.bitrate_kbps {
-            let mpeg1 = (header[1] >> 3) & 0x03 == 0b11;
-            let padding = ((header[2] >> 1) & 0x01) as usize;
-            let bitrate_bps = bitrate_kbps as usize * 1000;
-            let frame_size = if mpeg1 {
-                144 * bitrate_bps / info.sample_rate as usize + padding
-            } else {
-                72 * bitrate_bps / info.sample_rate as usize + padding
-            };
-            pos + frame_size
+            pos + mpeg_frame_size(header, bitrate_kbps, info.sample_rate)
         } else {
-            // Free-format: find next sync word as heuristic
-            let mut next = pos + 4;
-            while next + 1 < data.len() {
-                if data[next] == 0xFF && (data[next + 1] & 0xE0) == 0xE0 {
-                    break;
+            // Free-format: scan for the next sync word to determine frame end.
+            let mut search = pos + 4;
+            let found = loop {
+                if search + 1 >= data.len() {
+                    break None;
                 }
-                next += 1;
+                if data[search] == 0xFF && (data[search + 1] & 0xE0) == 0xE0 {
+                    break Some(search);
+                }
+                search += 1;
+            };
+            match found {
+                Some(end) => end,
+                None => break,
             }
-            if next + 1 >= data.len() {
-                break;
-            }
-            next
         };
 
         if frame_end > data.len() {
