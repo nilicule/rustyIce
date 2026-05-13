@@ -16,6 +16,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Returns the effective transcode config for `mount`: per-mount takes precedence over global.
     pub fn effective_transcode<'a>(&'a self, mount: &'a MountConfig) -> Option<&'a TranscodeConfig> {
         mount.transcode.as_ref().or(self.transcode.as_ref())
     }
@@ -96,7 +97,7 @@ pub enum TranscodeFormat {
     Mp3,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TranscodeConfig {
     pub format: TranscodeFormat,
     pub sample_rate: u32,
@@ -146,6 +147,11 @@ max_listeners_global  = 500
 ring_size             = 64
 slow_listener_grace_s = 2
 
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+
 [[mounts]]
 path            = "/stream"
 source_password = "hackme"
@@ -154,6 +160,11 @@ name            = "My Radio"
 description     = "The best radio"
 genre           = "Electronic"
 url             = "https://example.com"
+
+[mounts.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 192
 "#;
 
     const MINIMAL_CONFIG: &str = r#"
