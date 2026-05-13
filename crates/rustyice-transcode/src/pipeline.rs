@@ -3,14 +3,14 @@ use rustyice_core::config::TranscodeConfig;
 
 use crate::{
     TranscodeError,
-    decoder::decode_mp3_frames,
+    decoder::StreamDecoder,
     encoder::LameEncoder,
     resampler::PcmResampler,
 };
 
 pub struct TranscodePipeline {
     config: TranscodeConfig,
-    input_buf: Vec<u8>,
+    decoder: StreamDecoder,
     encoder: LameEncoder,
     // Set after first frame decoded; encoder is rebuilt if these differ from config
     source_sample_rate: Option<u32>,
@@ -35,7 +35,7 @@ impl TranscodePipeline {
         )?;
         Ok(Self {
             config,
-            input_buf: Vec::new(),
+            decoder: StreamDecoder::new(),
             encoder,
             source_sample_rate: None,
             source_channels: None,
@@ -44,26 +44,28 @@ impl TranscodePipeline {
     }
 
     /// Feed raw bytes from the source. Returns transcoded MP3 bytes.
-    /// Returns empty `Bytes` when still buffering (no complete frame yet).
+    /// Returns empty `Bytes` when still buffering (not enough data yet).
     pub fn push(&mut self, data: &[u8]) -> Result<Bytes, TranscodeError> {
         if data.is_empty() {
             return Ok(Bytes::new());
         }
-        self.input_buf.extend_from_slice(data);
-
-        let (frames, consumed) = collect_complete_frames(&self.input_buf);
-        if frames.is_empty() {
+        let (pcm, sample_rate, channels) = self.decoder.push(data)?;
+        if pcm.is_empty() || sample_rate == 0 {
             return Ok(Bytes::new());
         }
-        self.input_buf.drain(..consumed);
-
-        let combined: Vec<u8> = frames.into_iter().flatten().collect();
-        self.transcode_pcm(&combined)
+        self.process_pcm(pcm, sample_rate, channels)
     }
 
     /// Flush resampler tail then encoder's internal buffers at end of stream.
     pub fn flush(&mut self) -> Result<Bytes, TranscodeError> {
         let mut combined = Vec::new();
+
+        // Flush any remaining bytes from the decoder first.
+        let (pcm, sample_rate, channels) = self.decoder.flush_eof()?;
+        if !pcm.is_empty() && sample_rate != 0 {
+            let out = self.process_pcm(pcm, sample_rate, channels)?;
+            combined.extend_from_slice(&out);
+        }
 
         if let Some(ref mut resampler) = self.resampler {
             let tail_pcm = resampler.flush()?;
@@ -78,12 +80,7 @@ impl TranscodePipeline {
         Ok(Bytes::from(combined))
     }
 
-    fn transcode_pcm(&mut self, frame_data: &[u8]) -> Result<Bytes, TranscodeError> {
-        let (pcm, sample_rate, channels) = decode_mp3_frames(frame_data)?;
-        if pcm.is_empty() || sample_rate == 0 {
-            return Ok(Bytes::new());
-        }
-
+    fn process_pcm(&mut self, pcm: Vec<f32>, sample_rate: u32, channels: u8) -> Result<Bytes, TranscodeError> {
         let mut output: Vec<u8> = Vec::new();
 
         // Rebuild encoder if source format differs from what encoder expects
@@ -133,69 +130,6 @@ impl TranscodePipeline {
     }
 }
 
-fn mpeg_frame_size(header: &[u8], bitrate_kbps: u32, sample_rate: u32) -> usize {
-    let mpeg1 = header.len() >= 2 && (header[1] >> 3) & 0x03 == 0b11;
-    let padding = if header.len() >= 3 { ((header[2] >> 1) & 0x01) as usize } else { 0 };
-    let bitrate_bps = bitrate_kbps as usize * 1000;
-    if mpeg1 {
-        144 * bitrate_bps / sample_rate as usize + padding
-    } else {
-        72 * bitrate_bps / sample_rate as usize + padding
-    }
-}
-
-/// Scan `data` for complete MP3 frames. Returns (list_of_frame_byte_slices_owned, total_bytes_consumed).
-fn collect_complete_frames(data: &[u8]) -> (Vec<Vec<u8>>, usize) {
-    use rustyice_codec::mp3::Mp3Codec;
-    use rustyice_core::traits::Codec as _;
-
-    let codec = Mp3Codec;
-    let mut pos = 0;
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-
-    while pos + 4 <= data.len() {
-        if data[pos] != 0xFF || (data[pos + 1] & 0xE0) != 0xE0 {
-            pos += 1;
-            continue;
-        }
-
-        let header = &data[pos..];
-        let Some(info) = codec.probe(header) else {
-            pos += 1;
-            continue;
-        };
-
-        let frame_end = if let Some(bitrate_kbps) = info.bitrate_kbps {
-            pos + mpeg_frame_size(header, bitrate_kbps, info.sample_rate)
-        } else {
-            // Free-format: scan for the next sync word to determine frame end.
-            let mut search = pos + 4;
-            let found = loop {
-                if search + 1 >= data.len() {
-                    break None;
-                }
-                if data[search] == 0xFF && (data[search + 1] & 0xE0) == 0xE0 {
-                    break Some(search);
-                }
-                search += 1;
-            };
-            match found {
-                Some(end) => end,
-                None => break,
-            }
-        };
-
-        if frame_end > data.len() {
-            break;
-        }
-
-        frames.push(data[pos..frame_end].to_vec());
-        pos = frame_end;
-    }
-
-    (frames, pos)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,16 +155,6 @@ mod tests {
         let mut p = TranscodePipeline::new(test_config()).unwrap();
         let out = p.push(&[0u8; 1024]).unwrap();
         assert!(out.is_empty());
-    }
-
-    #[test]
-    fn collect_frames_finds_no_frames_in_garbage() {
-        let data = vec![0u8; 200];
-        let (frames, consumed) = collect_complete_frames(&data);
-        assert!(frames.is_empty());
-        // consumed may be > 0: scanner advances past garbage that cannot
-        // contain a valid sync word, preventing unbounded buffer growth.
-        assert!(consumed <= data.len());
     }
 
     #[test]
