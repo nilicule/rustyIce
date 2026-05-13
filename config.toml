@@ -18,6 +18,11 @@ username        = "admin"
 # bcrypt of "adminpass" — regenerate: htpasswd -bnBC 12 "" adminpass | tr -d ':\n'
 password_bcrypt = "$2y$12$tWRporih5P9huFKMLo7ozO.9WvKgTRlQBFRlF8Y4AsGglyRY7qvr."
 
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+
 [limits]
 max_listeners_global  = 500
 ring_size             = 64

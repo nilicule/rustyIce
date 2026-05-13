@@ -6,6 +6,7 @@ A single-binary Icecast-compatible MP3 streaming server written in Rust.
 
 - Icecast2-compatible source ingest — both `SOURCE` and `PUT` methods
 - MP3 streaming with automatic bitrate detection and real-time playback pacing
+- **Transcoding pipeline** — decode any source bitrate/VBR and re-encode to a consistent output format; per-mount config with global fallback; no config = transparent passthrough
 - Per-mount source passwords **and** an optional global default password for dynamic mounts
 - Public landing page listing active streams with one-click playback links
 - Password-gated admin dashboard with per-mount listener detail, kick-source and kick-listener controls
@@ -16,7 +17,7 @@ A single-binary Icecast-compatible MP3 streaming server written in Rust.
 
 ## Quickstart
 
-**Prerequisites:** Rust 1.85+ (2024 edition), Cargo.
+**Prerequisites:** Rust 1.85+ (2024 edition), Cargo. For transcoding: a C toolchain and `libmp3lame` (`brew install lame` / `apt install libmp3lame-dev`).
 
 ```sh
 # Clone and build
@@ -104,7 +105,56 @@ name            = "My Radio"
 description     = "Optional description"
 genre           = "Music"
 max_listeners   = 100               # omit for unlimited
+
+# Optional: per-mount transcode config.
+# When set, all source audio is decoded and re-encoded before delivery.
+# Overrides the global [transcode] block if both are set.
+# [mounts.transcode]
+# format       = "mp3"
+# sample_rate  = 44100
+# bitrate_kbps = 128
 ```
+
+### Transcoding
+
+rustyIce can decode incoming audio and re-encode it to a consistent format, so listeners always receive a predictable bitrate regardless of what the source is pushing (CBR, VBR, 320 kbps, etc.).
+
+Add a global fallback that applies to all mounts without their own transcode config:
+
+```toml
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+```
+
+Or configure it per-mount to override (or limit) only specific streams:
+
+```toml
+[[mounts]]
+path            = "/hifi"
+source_password = "hackme"
+
+[mounts.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 192
+
+[[mounts]]
+path            = "/mobile"
+source_password = "hackme"
+
+[mounts.transcode]
+format       = "mp3"
+sample_rate  = 22050
+bitrate_kbps = 48
+```
+
+No `[transcode]` section anywhere = transparent passthrough (default behaviour, zero overhead).
+
+Only MP3 sources are supported for transcoding. Connecting a non-MP3 source (Ogg, AAC) to a transcode-enabled mount returns `415 Unsupported Media Type`.
+
+**Requirements:** transcoding uses LAME via C bindings — a C toolchain (`cc`, `libmp3lame`) must be present at build time.
 
 Send `SIGHUP` to hot-reload the config (mount metadata and auth credentials update without dropping listeners).
 
