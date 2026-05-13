@@ -452,6 +452,27 @@ async fn put_title_rejects_newline() {
 }
 
 #[tokio::test]
+async fn put_title_rejects_carriage_return() {
+    let state = make_state();
+    add_mount(&state, "/stream");
+    let cookie = auth_cookie(&state);
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/mounts/stream/title")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from("{\"title\":\"line1\\rline2\"}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn put_title_rejects_too_long() {
     let state = make_state();
     add_mount(&state, "/stream");
