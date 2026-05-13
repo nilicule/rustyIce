@@ -181,16 +181,43 @@ function renderAdminMounts(rows) {
           ? `<button class="btn btn-danger btn-sm" data-kick-source="${escapeHtml(m.path)}">KICK SOURCE</button>`
           : '<span></span>'}
       </div>
+      <div class="mount-title-row">
+        <span class="mount-field-label">TITLE</span>
+        <input
+          type="text"
+          class="mount-title-input"
+          data-title-mount="${escapeHtml(m.path)}"
+          value="${escapeHtml(m.title || '')}"
+          placeholder="now playing — press SET to update"
+          maxlength="256"
+        >
+        <button class="btn btn-primary btn-sm" data-set-title="${escapeHtml(m.path)}">SET</button>
+        <button class="btn btn-ghost btn-sm" data-clear-title="${escapeHtml(m.path)}">CLEAR</button>
+        <span class="mount-title-error error hidden" data-title-error="${escapeHtml(m.path)}"></span>
+      </div>
       ${m.source_connected ? renderListenersTable(listeners) : ''}
     </div>
   `).join('');
 
-  // Wire up kick buttons after rendering.
   container.querySelectorAll('[data-kick-source]').forEach((btn) => {
     btn.addEventListener('click', () => kickSource(btn.dataset.kickSource));
   });
   container.querySelectorAll('[data-kick-listener]').forEach((btn) => {
     btn.addEventListener('click', () => kickListener(btn.dataset.kickListener));
+  });
+  container.querySelectorAll('[data-set-title]').forEach((btn) => {
+    btn.addEventListener('click', () => setTitle(btn.dataset.setTitle));
+  });
+  container.querySelectorAll('[data-clear-title]').forEach((btn) => {
+    btn.addEventListener('click', () => clearTitle(btn.dataset.clearTitle));
+  });
+  container.querySelectorAll('.mount-title-input').forEach((inp) => {
+    inp.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        setTitle(inp.dataset.titleMount);
+      }
+    });
   });
 }
 
@@ -226,6 +253,34 @@ async function kickSource(path) {
 
 async function kickListener(id) {
   const r = await fetch(`/api/listeners/${id}`, { method: 'DELETE' });
+  if (r.status === 401) { enterLogin(); return; }
+  refreshAdmin();
+}
+
+async function setTitle(path) {
+  const slug = path.replace(/^\//, '');
+  const input = document.querySelector(`.mount-title-input[data-title-mount="${CSS.escape(path)}"]`);
+  const errEl = document.querySelector(`[data-title-error="${CSS.escape(path)}"]`);
+  errEl.classList.add('hidden');
+  const title = input.value;
+  const r = await fetch(`/api/mounts/${encodeURIComponent(slug)}/title`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (r.status === 401) { enterLogin(); return; }
+  if (!r.ok) {
+    const msg = await r.json().then((j) => j.message).catch(() => `Error ${r.status}`);
+    errEl.textContent = msg;
+    errEl.classList.remove('hidden');
+    return;
+  }
+  refreshAdmin();
+}
+
+async function clearTitle(path) {
+  const slug = path.replace(/^\//, '');
+  const r = await fetch(`/api/mounts/${encodeURIComponent(slug)}/title`, { method: 'DELETE' });
   if (r.status === 401) { enterLogin(); return; }
   refreshAdmin();
 }
