@@ -20,6 +20,16 @@ function fmtUptime(secs) {
   return `${s}s`;
 }
 
+// Format a bits-per-second rate with adaptive unit (bps / kbps / Mbps / Gbps).
+function fmtBitrate(bytesPerSec) {
+  if (bytesPerSec == null || !Number.isFinite(bytesPerSec) || bytesPerSec < 0) return '—';
+  const bps = bytesPerSec * 8;
+  if (bps < 1_000) return `${bps.toFixed(0)} bps`;
+  if (bps < 1_000_000) return `${(bps / 1_000).toFixed(1)} kbps`;
+  if (bps < 1_000_000_000) return `${(bps / 1_000_000).toFixed(2)} Mbps`;
+  return `${(bps / 1_000_000_000).toFixed(2)} Gbps`;
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -32,7 +42,29 @@ let state = {
   user: null,
   mountPath: null,           // set in mount-detail view
   pollHandle: null,
+  bw: { in: null, out: null, ts: null },  // prior bandwidth sample for rate calc
 };
+
+// Compute and store an inbound/outbound rate snapshot from the latest
+// cumulative byte counters in `stats`. Returns { rateIn, rateOut } in
+// bytes-per-second, or `{ rateIn: null, rateOut: null }` on the first sample
+// or after a counter reset (server restart).
+function sampleBandwidth(stats) {
+  const now = performance.now();
+  const prev = state.bw;
+  state.bw = { in: stats.total_bytes_in, out: stats.total_bytes_out, ts: now };
+  if (prev.ts == null) return { rateIn: null, rateOut: null };
+  const dt = (now - prev.ts) / 1000;
+  if (dt <= 0) return { rateIn: null, rateOut: null };
+  const dIn = stats.total_bytes_in - prev.in;
+  const dOut = stats.total_bytes_out - prev.out;
+  // Counter reset (server restart between polls): emit `null` rather than a
+  // huge negative number.
+  return {
+    rateIn: dIn >= 0 ? dIn / dt : null,
+    rateOut: dOut >= 0 ? dOut / dt : null,
+  };
+}
 
 // ─── routing ───────────────────────────────────────────────────────────
 async function route() {
@@ -156,6 +188,9 @@ async function refreshAdmin() {
     $('adm-stat-listeners').textContent = stats.total_listeners;
     $('adm-stat-mounts').textContent = mounts.filter((m) => m.source_connected).length;
     $('adm-stat-uptime').textContent = fmtUptime(stats.uptime_secs);
+    const { rateIn, rateOut } = sampleBandwidth(stats);
+    $('adm-stat-bw-in').textContent = fmtBitrate(rateIn);
+    $('adm-stat-bw-out').textContent = fmtBitrate(rateOut);
     $('footer-version').textContent = `v${stats.version}`;
 
     const rows = mounts.map((m) => ({ mount: m, listeners: [] }));

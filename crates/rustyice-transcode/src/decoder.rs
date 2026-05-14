@@ -13,13 +13,21 @@ use symphonia::core::{
 };
 use crate::TranscodeError;
 
-/// Minimum bytes to accumulate before attempting format probe. Sized so
-/// Symphonia's OggReader probe (which reads the full Vorbis header chain plus
-/// at least one audio packet to verify the codec) can complete in a single
-/// pass against the buffered bytes; below this threshold the probe runs out
-/// of data, errors, and destructively consumes the BOS page — leaving us
-/// unable to retry. For live sources this adds ~0.5 s of warmup at 1 Mbps.
-const INIT_THRESHOLD: usize = 65_536;
+/// Minimum bytes to accumulate before attempting format probe for MP3.
+/// MP3's frame-sync probe locks on quickly with very little data.
+const INIT_THRESHOLD_MP3: usize = 8_192;
+/// Minimum bytes for Ogg Vorbis. Symphonia's OggReader probe reads the full
+/// Vorbis header chain plus at least one audio packet to verify the codec —
+/// below this threshold the probe runs out of data, errors, and destructively
+/// consumes the BOS page, leaving the retry path unable to recover.
+const INIT_THRESHOLD_VORBIS: usize = 65_536;
+
+fn init_threshold_for(codec: &CodecId) -> usize {
+    match *codec {
+        CodecId::VORBIS => INIT_THRESHOLD_VORBIS,
+        _ => INIT_THRESHOLD_MP3,
+    }
+}
 
 struct PipeBuf {
     data: VecDeque<u8>,
@@ -101,7 +109,7 @@ impl StreamDecoder {
 
         if self.inner.is_none() {
             self.pending.extend_from_slice(data);
-            if self.pending.len() < INIT_THRESHOLD {
+            if self.pending.len() < init_threshold_for(&self.source_codec) {
                 return Ok((vec![], 0, 0));
             }
             let pending = std::mem::take(&mut self.pending);

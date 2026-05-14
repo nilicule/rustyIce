@@ -67,7 +67,12 @@ pub struct MountInfo {
 /// reads from the admin API and metrics scraper.
 #[derive(Debug, Default)]
 pub struct MountStats {
+    /// Bytes read from the connected source (raw network bytes — drives the
+    /// admin dashboard's live inbound-bandwidth gauge).
     pub bytes_received: AtomicU64,
+    /// Bytes written to listeners on this mount (sum across all listeners
+    /// past and present — drives the live outbound-bandwidth gauge).
+    pub bytes_sent: AtomicU64,
     pub packets_published: AtomicU64,
     pub total_listener_seconds: AtomicU64,
     pub peak_listeners: AtomicU32,

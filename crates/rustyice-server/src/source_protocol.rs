@@ -177,9 +177,12 @@ pub async fn handle_source_connection(
         .and_then(|s| s.parse::<u64>().ok());
 
     let chained = ChainReader::new(leftover, read_half);
+    // Wrap so every byte read from the network is reflected in
+    // `mount.stats.bytes_received` for the live inbound-bandwidth gauge.
+    let counted = CountingReader::new(chained, mount.stats.clone());
     let body_reader: Pin<Box<dyn AsyncRead + Send + Unpin>> = match content_length {
-        Some(len) => Box::pin(chained.take(len)),
-        None => Box::pin(chained),
+        Some(len) => Box::pin(counted.take(len)),
+        None => Box::pin(counted),
     };
 
     let ingest = build_ingest_for_mount(&state, &mount_path, &mount);
@@ -463,6 +466,39 @@ async fn write_status_with_auth_challenge(w: &mut OwnedWriteHalf) -> io::Result<
                     Connection: close\r\n\r\n";
     w.write_all(response.as_bytes()).await?;
     w.flush().await
+}
+
+// ── Reader that ticks `mount.stats.bytes_received` on each successful read ─
+
+struct CountingReader<R> {
+    inner: R,
+    stats: Arc<rustyice_core::mount::MountStats>,
+}
+
+impl<R: AsyncRead + Unpin> CountingReader<R> {
+    fn new(inner: R, stats: Arc<rustyice_core::mount::MountStats>) -> Self {
+        Self { inner, stats }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for CountingReader<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &result {
+            let delta = buf.filled().len() - before;
+            if delta > 0 {
+                self.stats
+                    .bytes_received
+                    .fetch_add(delta as u64, Ordering::Relaxed);
+            }
+        }
+        result
+    }
 }
 
 // ── Reader that replays buffered prefix bytes before reading from inner ────

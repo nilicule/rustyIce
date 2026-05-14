@@ -9,8 +9,13 @@ use axum::{
     Router,
 };
 use rustyice_core::config::TranscodeFormat;
+use rustyice_core::mount::MountStats;
 use rustyice_core::types::CodecId;
-use tokio::io::AsyncWriteExt;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Builds the router for listener traffic on the stream port.
 ///
@@ -95,8 +100,14 @@ async fn listener_handler(
         .register(mount_path.clone(), peer_addr, listener_cancel.clone());
 
     let (read_end, write_end) = tokio::io::duplex(65_536);
-    let writer: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> =
-        Box::pin(write_end);
+    // Wrap the duplex writer so every byte the output protocol writes is
+    // reflected in `mount.stats.bytes_sent` for the live outbound-bandwidth
+    // gauge. Counted bytes include captured Vorbis header pages, ICY
+    // metadata frames, and the audio payload — i.e. anything the listener
+    // sees on the wire.
+    let writer: Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> = Box::pin(
+        CountingWriter::new(write_end, mount.stats.clone()),
+    );
 
     let output = state.output.clone();
     let listeners_ref = state.listeners.clone();
@@ -188,5 +199,50 @@ fn content_type_for(codec: &CodecId) -> &'static str {
     match *codec {
         CodecId::VORBIS => "application/ogg",
         _ => "audio/mpeg",
+    }
+}
+
+/// Writer that ticks `mount.stats.bytes_sent` for every byte successfully
+/// written to its inner writer. Wraps the listener-side duplex `write_end`
+/// so the count reflects what the output protocol delivered toward the HTTP
+/// response body (and thus the listener).
+struct CountingWriter<W> {
+    inner: W,
+    stats: Arc<MountStats>,
+}
+
+impl<W: AsyncWrite + Unpin> CountingWriter<W> {
+    fn new(inner: W, stats: Arc<MountStats>) -> Self {
+        Self { inner, stats }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for CountingWriter<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &result {
+            self.stats
+                .bytes_sent
+                .fetch_add(*n as u64, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
