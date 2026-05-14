@@ -1,4 +1,5 @@
 use crate::bus::TokioBroadcastBus;
+use crate::source_headers::parse_source_overlay;
 use crate::state::AppState;
 use axum::{
     body::Body,
@@ -77,6 +78,9 @@ async fn source_handler(
     *mount.source_cancel.lock().unwrap() = Some(source_cancel.clone());
     *mount.connected_at.lock().unwrap() = Some(Instant::now());
 
+    let overlay = parse_source_overlay(&headers);
+    mount.source_overlay.store(Arc::new(Some(overlay.clone())));
+
     // Runs cleanup even if the handler future is dropped mid-await (e.g. TCP reset).
     // For dynamic mounts, the guard also removes the mount from the registry.
     let _guard = SourceDisconnectGuard {
@@ -87,8 +91,17 @@ async fn source_handler(
     };
 
     info!(
-        "source connected: mount={mount_path} codec={codec}{}",
-        if dynamic { " (dynamic)" } else { "" }
+        mount = %mount_path,
+        codec = %codec,
+        dynamic,
+        name = ?overlay.name,
+        description = ?overlay.description,
+        genre = ?overlay.genre,
+        url = ?overlay.url,
+        public = ?overlay.public,
+        audio_info = ?overlay.audio_info,
+        bitrate_kbps = ?overlay.bitrate_kbps,
+        "source connected"
     );
 
     let stream = body.into_data_stream().map_err(std::io::Error::other);
@@ -211,6 +224,7 @@ impl Drop for SourceDisconnectGuard {
         self.mount.source_connected.store(false, Ordering::Release);
         *self.mount.source_cancel.lock().unwrap() = None;
         *self.mount.connected_at.lock().unwrap() = None;
+        self.mount.source_overlay.store(Arc::new(None));
         if let Some(registry) = &self.mounts {
             let _ = registry.remove(&self.mount_path);
             info!("source disconnected: mount={} (dynamic mount removed)", self.mount_path);
@@ -403,5 +417,21 @@ mod tests {
             HeaderValue::from_static("application/octet-stream"),
         );
         assert_eq!(detect_codec_from_content_type(&headers), CodecId::MP3);
+    }
+
+    use crate::source_headers::parse_source_overlay;
+
+    #[test]
+    fn parsed_overlay_round_trips_through_active_mount() {
+        // Sanity that the source_handler's capture path will work end-to-end:
+        // headers → overlay → stored on mount → readable.
+        let mut headers = HeaderMap::new();
+        headers.insert("ice-name", HeaderValue::from_static("End-To-End"));
+        headers.insert("ice-public", HeaderValue::from_static("1"));
+        headers.insert("ice-bitrate", HeaderValue::from_static("192"));
+        let overlay = parse_source_overlay(&headers);
+        assert_eq!(overlay.name.as_deref(), Some("End-To-End"));
+        assert_eq!(overlay.public, Some(true));
+        assert_eq!(overlay.bitrate_kbps, Some(192));
     }
 }
