@@ -1,7 +1,11 @@
 [package]
-name    = "rustyice-server"
+name        = "rustyice-server"
 version.workspace = true
 edition.workspace = true
+description = "Icecast-compatible MP3 streaming server, pure Rust"
+license     = "MIT OR Apache-2.0"
+repository  = "https://github.com/nilicule/rustyIce"
+readme      = "../../README.md"
 
 [[bin]]
 name = "rustyice"
@@ -46,3 +50,28 @@ reqwest             = { version = "0.12", features = ["stream", "json"] }
 serde_json.workspace = true
 bytes.workspace     = true
 rustyice-transcode  = { path = "../rustyice-transcode" }
+
+# ── Package metadata for cargo-deb ─────────────────────────────────────────
+[package.metadata.deb]
+name             = "rustyice"
+maintainer       = "Remco Brink <nilicule@gmail.com>"
+section          = "net"
+priority         = "optional"
+extended-description = """\
+rustyice is a small, fast, icecast-compatible MP3 streaming server.
+It accepts standard Icecast SOURCE clients and serves listeners over HTTP."""
+assets = [
+    ["target/release/rustyice", "usr/bin/", "755"],
+    ["../../README.md",         "usr/share/doc/rustyice/README.md", "644"],
+    ["../../config.toml",       "etc/rustyice/config.toml.example", "644"],
+]
+
+# ── Package metadata for cargo-generate-rpm ────────────────────────────────
+[package.metadata.generate-rpm]
+name    = "rustyice"
+summary = "Icecast-compatible MP3 streaming server"
+assets  = [
+    { source = "target/release/rustyice", dest = "/usr/bin/rustyice",                    mode = "755" },
+    { source = "../../README.md",         dest = "/usr/share/doc/rustyice/README.md",    mode = "644" },
+    { source = "../../config.toml",       dest = "/etc/rustyice/config.toml.example",    mode = "644" },
+]

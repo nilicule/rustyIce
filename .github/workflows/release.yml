@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Source archives (.tar.gz, .zip) ────────────────────────────────────────
+  source:
+    name: source archives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build source archives
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          PREFIX="rustyice-${TAG}"
+          git archive --format=tar.gz --prefix="${PREFIX}/" -o "${PREFIX}.tar.gz" HEAD
+          git archive --format=zip    --prefix="${PREFIX}/" -o "${PREFIX}.zip"    HEAD
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          gh release upload "$TAG" "rustyice-${TAG}.tar.gz" "rustyice-${TAG}.zip" --clobber
+
+  # ── Single-file binaries (one per OS/arch) ─────────────────────────────────
+  binary:
+    name: binary ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: darwin-amd64
+            runner: macos-13
+            target: x86_64-apple-darwin
+          - name: darwin-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+          - name: windows-amd64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      # mp3lame-sys builds libmp3lame from source via autotools; aws-lc-rs
+      # needs cmake. C compilers are preinstalled on every runner image.
+      - name: Install build prereqs (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake autoconf automake libtool pkg-config nasm
+
+      - name: Install build prereqs (macOS)
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool nasm
+
+      # Windows: mp3lame-sys's autotools build needs MSYS2.
+      - name: Install build prereqs (windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: >-
+            base-devel
+            autoconf
+            automake
+            libtool
+            make
+
+      - name: Add MSYS2 to PATH (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "C:/msys64/usr/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --bin rustyice --target ${{ matrix.target }}
+
+      - name: Rename + upload binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OUT="rustyice-${{ matrix.name }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/rustyice${{ matrix.ext }}" "$OUT"
+          gh release upload "${{ github.event.release.tag_name }}" "$OUT" --clobber
+
+  # ── .deb and .rpm packages (linux amd64 + arm64) ───────────────────────────
+  linux-package:
+    name: package ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install build prereqs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake autoconf automake libtool pkg-config nasm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-${{ matrix.target }}
+
+      # Prebuilt binaries — far faster than `cargo install`.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      - name: Build release binary
+        run: cargo build --release --bin rustyice --target ${{ matrix.target }} -p rustyice-server
+
+      - name: Build .deb
+        run: cargo deb -p rustyice-server --no-build --target ${{ matrix.target }}
+
+      - name: Build .rpm
+        run: cargo generate-rpm -p crates/rustyice-server --target ${{ matrix.target }}
+
+      - name: Upload .deb and .rpm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          gh release upload "$TAG" target/${{ matrix.target }}/debian/*.deb           --clobber
+          gh release upload "$TAG" target/${{ matrix.target }}/generate-rpm/*.rpm     --clobber
