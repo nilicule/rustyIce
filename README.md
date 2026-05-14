@@ -22,6 +22,7 @@ Download the latest prebuilt binary for your OS/arch:
 ```sh
 curl -LJO "https://github.com/nilicule/rustyice/releases/latest/download/rustyice-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')"
 chmod +x rustyice-*
+mv rustyice-* rustyice
 ```
 
 Or build from source — **prerequisites:** Rust 1.85+ (2024 edition), Cargo. For transcoding: a C toolchain and `libmp3lame` (`brew install lame` / `apt install libmp3lame-dev`).
