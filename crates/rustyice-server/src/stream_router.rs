@@ -51,11 +51,7 @@ async fn source_handler(
     // only handles MP3 input; accepting other codecs would produce a silent stream.
     {
         let cfg = state.config.load();
-        let transcode = if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
-            cfg.effective_transcode(mc).cloned()
-        } else {
-            cfg.transcode.clone()
-        };
+        let transcode = mount_transcode(&cfg, &mount_path);
         if transcode.is_some() && codec != CodecId::MP3 {
             return (
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -185,15 +181,21 @@ fn create_dynamic_mount(
     mount
 }
 
+fn mount_transcode(
+    cfg: &rustyice_core::config::Config,
+    mount_path: &str,
+) -> Option<rustyice_core::config::TranscodeConfig> {
+    if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
+        cfg.effective_transcode(mc).cloned()
+    } else {
+        cfg.transcode.clone()
+    }
+}
+
 fn build_ingest_for_mount(state: &AppState, mount_path: &str) -> IcecastIngest {
     let cfg = state.config.load();
 
-    let transcode = if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
-        cfg.effective_transcode(mc).cloned()
-    } else {
-        // Dynamic mount: no per-mount config exists, use the global default.
-        cfg.transcode.clone()
-    };
+    let transcode = mount_transcode(&cfg, mount_path);
 
     let mut ingest = IcecastIngest::default();
 
@@ -302,20 +304,34 @@ async fn listener_handler(
 
     let stream = tokio_util::io::ReaderStream::new(read_end);
 
-    let icy_br = {
-        let transcode = if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
-            cfg.effective_transcode(mc).cloned()
-        } else {
-            cfg.transcode.clone()
-        };
-        transcode.map_or_else(|| "128".to_string(), |tc| tc.bitrate_kbps.to_string())
-    };
+    let transcode = mount_transcode(&cfg, &mount_path);
+    let identity = mount.effective_identity(transcode.as_ref());
 
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "audio/mpeg")
-        .header("icy-name", mount.info.load().metadata.name.as_deref().unwrap_or(""))
-        .header("icy-br", icy_br);
+        .header(header::CONTENT_TYPE, "audio/mpeg");
+
+    if let Some(v) = &identity.name {
+        builder = builder.header("icy-name", v);
+    }
+    if let Some(v) = &identity.description {
+        builder = builder.header("icy-description", v);
+    }
+    if let Some(v) = &identity.genre {
+        builder = builder.header("icy-genre", v);
+    }
+    if let Some(v) = &identity.url {
+        builder = builder.header("icy-url", v);
+    }
+    if let Some(p) = identity.public {
+        builder = builder.header("icy-pub", if p { "1" } else { "0" });
+    }
+    if let Some(v) = &identity.audio_info {
+        builder = builder.header("ice-audio-info", v);
+    }
+    if let Some(b) = identity.bitrate_kbps {
+        builder = builder.header("icy-br", b.to_string());
+    }
 
     if icy_requested {
         builder = builder.header("icy-metaint", "8192");
