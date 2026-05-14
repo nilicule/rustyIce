@@ -15,6 +15,22 @@ pub struct MountMetadata {
     pub url: Option<String>,
 }
 
+/// Source-supplied identity headers captured on connect.
+///
+/// Populated from `Ice-*` / `Icy-*` request headers and merged over
+/// `MountMetadata` per-field by `ActiveMount::effective_identity`. Cleared
+/// on source disconnect.
+#[derive(Debug, Clone, Default)]
+pub struct SourceOverlay {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub genre: Option<String>,
+    pub url: Option<String>,
+    pub public: Option<bool>,
+    pub audio_info: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+}
+
 /// Full configuration for a mount point.
 /// Stored behind `ArcSwap` so it can be atomically replaced on SIGHUP
 /// without locking any request path.
@@ -55,6 +71,10 @@ pub struct ActiveMount {
     /// Runtime now-playing title set via admin API. Lock-free read on the
     /// listener hot path. `None` = use `info.metadata.name` fallback.
     pub current_title: Arc<ArcSwap<Option<String>>>,
+    /// Source-supplied identity headers, populated on connect and cleared on
+    /// disconnect. Lock-free read on the listener hot path. `None` = no source
+    /// connected, or source supplied nothing.
+    pub source_overlay: Arc<ArcSwap<Option<SourceOverlay>>>,
 }
 
 impl ActiveMount {
@@ -67,6 +87,7 @@ impl ActiveMount {
             stats: Arc::new(MountStats::default()),
             source_cancel: std::sync::Mutex::new(None),
             current_title: Arc::new(ArcSwap::from_pointee(None)),
+            source_overlay: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 
@@ -265,5 +286,47 @@ mod tests {
         new_info.source_password = "rotated".to_string();
         mount.info.store(Arc::new(new_info));
         assert_eq!(mount.current_title.load().as_deref(), Some("persisting"));
+    }
+
+    #[test]
+    fn source_overlay_defaults_to_none() {
+        let mount = ActiveMount::new(make_mount_info("/stream"), Arc::new(MockBus));
+        assert!(mount.source_overlay.load().is_none());
+    }
+
+    #[test]
+    fn source_overlay_can_be_set_and_cleared() {
+        let mount = ActiveMount::new(make_mount_info("/stream"), Arc::new(MockBus));
+        let overlay = SourceOverlay {
+            name: Some("From Source".to_string()),
+            genre: Some("Rock".to_string()),
+            public: Some(true),
+            bitrate_kbps: Some(192),
+            ..Default::default()
+        };
+        mount.source_overlay.store(Arc::new(Some(overlay)));
+        let snap = mount.source_overlay.load_full();
+        let stored = snap.as_ref().as_ref().unwrap();
+        assert_eq!(stored.name.as_deref(), Some("From Source"));
+        assert_eq!(stored.genre.as_deref(), Some("Rock"));
+        assert_eq!(stored.public, Some(true));
+        assert_eq!(stored.bitrate_kbps, Some(192));
+
+        mount.source_overlay.store(Arc::new(None));
+        assert!(mount.source_overlay.load().is_none());
+    }
+
+    #[test]
+    fn source_overlay_survives_info_hot_swap() {
+        let mount = ActiveMount::new(make_mount_info("/stream"), Arc::new(MockBus));
+        mount.source_overlay.store(Arc::new(Some(SourceOverlay {
+            name: Some("persisting".to_string()),
+            ..Default::default()
+        })));
+        let mut new_info = make_mount_info("/stream");
+        new_info.source_password = "rotated".to_string();
+        mount.info.store(Arc::new(new_info));
+        let snap = mount.source_overlay.load_full();
+        assert_eq!(snap.as_ref().as_ref().unwrap().name.as_deref(), Some("persisting"));
     }
 }
