@@ -782,3 +782,384 @@ async fn admin_api_exposes_listener_peer_address() {
     let _ = source_handle.await;
     shutdown.cancel();
 }
+
+/// Helper: open a source PUT with a channel-driven streaming body. Returns the
+/// JoinHandle of the source task and a sender; drop the sender to end the
+/// source connection cleanly. The first frame is pre-sent so the server has
+/// already captured the overlay by the time the helper returns.
+async fn open_source_with_overlay(
+    stream_port: u16,
+    extra_headers: &[(&'static str, &'static str)],
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
+) {
+    use bytes::Bytes;
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx));
+    let source_url = format!("http://127.0.0.1:{stream_port}/stream");
+    let extra: Vec<(String, String)> =
+        extra_headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let source_handle = tokio::spawn(async move {
+        let mut req = reqwest::Client::new()
+            .put(&source_url)
+            .header("Authorization", "Basic dGVzdHBhc3M=") // base64("testpass")
+            .header("Content-Type", "audio/mpeg");
+        for (k, v) in &extra {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let _ = req.body(body).send().await;
+    });
+    // Push a first frame so the source actually attaches and the overlay is
+    // captured before the test queries.
+    let frame: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(8_192).collect();
+    body_tx.send(Ok(Bytes::from(frame))).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    (source_handle, body_tx)
+}
+
+#[tokio::test]
+async fn source_ice_headers_appear_in_listener_response() {
+    let (stream_port, _admin_port, shutdown) = build_test_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (source_handle, body_tx) = open_source_with_overlay(
+        stream_port,
+        &[
+            ("Ice-Name", "Source Name"),
+            ("Ice-Description", "Source Desc"),
+            ("Ice-Genre", "Rock"),
+            ("Ice-URL", "https://source"),
+            ("Ice-Public", "1"),
+            ("Ice-Audio-Info", "samplerate=44100;channels=2"),
+            ("Ice-Bitrate", "192"),
+        ],
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{stream_port}/stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let h = resp.headers();
+    assert_eq!(h.get("icy-name").and_then(|v| v.to_str().ok()), Some("Source Name"));
+    assert_eq!(h.get("icy-description").and_then(|v| v.to_str().ok()), Some("Source Desc"));
+    assert_eq!(h.get("icy-genre").and_then(|v| v.to_str().ok()), Some("Rock"));
+    assert_eq!(h.get("icy-url").and_then(|v| v.to_str().ok()), Some("https://source"));
+    assert_eq!(h.get("icy-pub").and_then(|v| v.to_str().ok()), Some("1"));
+    assert_eq!(
+        h.get("ice-audio-info").and_then(|v| v.to_str().ok()),
+        Some("samplerate=44100;channels=2"),
+    );
+    assert_eq!(h.get("icy-br").and_then(|v| v.to_str().ok()), Some("192"));
+
+    drop(resp);
+    drop(body_tx);
+    let _ = source_handle.await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn listener_falls_back_to_config_when_source_sends_no_ice_headers() {
+    let (stream_port, _admin_port, shutdown) = build_test_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (source_handle, body_tx) = open_source_with_overlay(stream_port, &[]).await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{stream_port}/stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let h = resp.headers();
+    // Config-only mount has name="Test", no other identity fields.
+    assert_eq!(h.get("icy-name").and_then(|v| v.to_str().ok()), Some("Test"));
+    assert!(h.get("icy-description").is_none());
+    assert!(h.get("icy-genre").is_none());
+    assert!(h.get("icy-url").is_none());
+    assert!(h.get("icy-pub").is_none());
+    assert!(h.get("ice-audio-info").is_none());
+    // No transcode, no source bitrate → header omitted.
+    assert!(h.get("icy-br").is_none());
+
+    drop(resp);
+    drop(body_tx);
+    let _ = source_handle.await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn admin_api_reflects_overlay_then_reverts_on_disconnect() {
+    use bytes::Bytes;
+    let (stream_port, admin_port, shutdown) = build_test_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Use a channel-driven streaming body so the source connection lifetime is
+    // explicit: it ends when we drop the sender, not when a fixed buffer drains.
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
+    let body_stream = tokio_stream::wrappers::ReceiverStream::new(body_rx);
+    let body = reqwest::Body::wrap_stream(body_stream);
+
+    let source_url = format!("http://127.0.0.1:{stream_port}/stream");
+    let source_handle = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&source_url)
+            .header("Authorization", "Basic dGVzdHBhc3M=")
+            .header("Content-Type", "audio/mpeg")
+            .header("Ice-Name", "Live")
+            .header("Ice-Genre", "Jazz")
+            .body(body)
+            .send()
+            .await;
+    });
+
+    // Push an initial chunk so the server registers the connection and the
+    // overlay is captured.
+    let frame: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(8_192).collect();
+    body_tx.send(Ok(Bytes::from(frame))).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let json: serde_json::Value = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{admin_port}/api/mounts"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mount = json[0].clone();
+    assert_eq!(mount["name"], "Live", "overlay name should win over config");
+    assert_eq!(mount["genre"], "Jazz");
+
+    // Drop the sender → body stream EOFs → source disconnects → guard fires.
+    drop(body_tx);
+    let _ = source_handle.await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let json2: serde_json::Value = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{admin_port}/api/mounts"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mount2 = json2[0].clone();
+    // Config name "Test" is back, overlay cleared.
+    assert_eq!(mount2["name"], "Test");
+    assert!(mount2["genre"].is_null(), "overlay should be cleared on disconnect");
+
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn ice_name_wins_over_icy_name_when_both_sent() {
+    let (stream_port, _admin_port, shutdown) = build_test_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (source_handle, body_tx) = open_source_with_overlay(
+        stream_port,
+        &[("Ice-Name", "ICE wins"), ("Icy-Name", "ICY loses")],
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{stream_port}/stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.headers().get("icy-name").and_then(|v| v.to_str().ok()),
+        Some("ICE wins"),
+    );
+
+    drop(resp);
+    drop(body_tx);
+    let _ = source_handle.await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn ice_name_used_as_streamtitle_fallback_in_icy_meta() {
+    use bytes::Bytes;
+    let (stream_port, _admin_port, shutdown) = build_test_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Source first, with a streaming body we keep alive until the test finishes.
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx));
+    let source_url = format!("http://127.0.0.1:{stream_port}/stream");
+    let source_handle = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&source_url)
+            .header("Authorization", "Basic dGVzdHBhc3M=")
+            .header("Content-Type", "audio/mpeg")
+            .header("Ice-Name", "Overlay Title")
+            .body(body)
+            .send()
+            .await;
+    });
+
+    // Push enough data so listener can cross a metaint boundary.
+    let frame: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(16_384).collect();
+    body_tx.send(Ok(Bytes::from(frame))).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut listener_resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{stream_port}/stream"))
+        .header("Icy-Metadata", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listener_resp.status(), 200);
+
+    // Keep feeding the source so the listener can consume past 8192 bytes.
+    let feeder = tokio::spawn(async move {
+        for _ in 0..4 {
+            let frame: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(8_192).collect();
+            if body_tx.send(Ok(Bytes::from(frame))).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let meta = read_icy_meta(&mut listener_resp, 8192).await;
+    assert!(
+        meta.contains("StreamTitle='Overlay Title';"),
+        "expected overlay name as StreamTitle fallback, got: {meta:?}",
+    );
+
+    drop(listener_resp);
+    let _ = feeder.await;
+    let _ = source_handle.await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn transcoding_overrides_source_bitrate_and_audio_info() {
+    // Build a server with transcoding enabled for /stream.
+    let cfg = Config {
+        server: ServerConfig {
+            stream_bind: "127.0.0.1:0".parse().unwrap(),
+            admin_bind: "127.0.0.1:0".parse().unwrap(),
+            hostname: "localhost".to_string(),
+        },
+        logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
+        auth: AuthConfig { users: vec![], source_password: None },
+        limits: LimitsConfig {
+            max_listeners_global: 100,
+            ring_size: 64,
+            slow_listener_grace_s: 2,
+            source_max_kbps: None,
+        },
+        mounts: vec![MountConfig {
+            path: "/stream".to_string(),
+            source_password: "testpass".to_string(),
+            max_listeners: None,
+            name: Some("Test".to_string()),
+            description: None,
+            genre: None,
+            url: None,
+            transcode: Some(TranscodeConfig {
+                format: TranscodeFormat::Mp3,
+                sample_rate: 22050,
+                bitrate_kbps: 64,
+            }),
+        }],
+        tls: None,
+        transcode: None,
+    };
+
+    let mounts = MountRegistry::new();
+    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    mounts.add(Arc::new(ActiveMount::new(
+        MountInfo {
+            path: "/stream".to_string(),
+            codec: CodecId::MP3,
+            source_password: "testpass".to_string(),
+            max_listeners: None,
+            metadata: MountMetadata { name: Some("Test".to_string()), ..Default::default() },
+        },
+        bus,
+    )));
+
+    let shutdown = CancellationToken::new();
+    let listeners = ListenerMap::new();
+    let auth: Arc<dyn rustyice_core::traits::AuthBackend + Send + Sync> =
+        Arc::new(TomlBcryptAuth::new(&cfg));
+    let ingest: Arc<dyn rustyice_core::traits::IngestProtocol + Send + Sync> =
+        Arc::new(IcecastIngest::default());
+    let output: Arc<dyn rustyice_core::traits::OutputProtocol + Send + Sync> =
+        Arc::new(HttpPassthroughOutput::default());
+
+    let app_state = AppState {
+        mounts: mounts.clone(),
+        auth: auth.clone(),
+        ingest,
+        output,
+        listeners: listeners.clone(),
+        config: Arc::new(ArcSwap::from_pointee(cfg.clone())),
+        shutdown: shutdown.clone(),
+    };
+
+    let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stream_port = stream_listener.local_addr().unwrap().port();
+    let stream_router = build_stream_router(app_state)
+        .layer(ServiceBuilder::new().layer(SourceMethodLayer));
+    let stream_sd = shutdown.clone();
+    tokio::spawn(async move {
+        axum::serve(
+            stream_listener,
+            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { stream_sd.cancelled().await })
+        .await
+        .unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Source claims 320 kbps but transcode target is 64 kbps. We should advertise 64.
+    use bytes::Bytes;
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx));
+    let source_url = format!("http://127.0.0.1:{stream_port}/stream");
+    let source_handle = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&source_url)
+            .header("Authorization", "Basic dGVzdHBhc3M=")
+            .header("Content-Type", "audio/mpeg")
+            .header("Ice-Bitrate", "320")
+            .header("Ice-Audio-Info", "samplerate=48000;channels=2;bitrate=320")
+            .body(body)
+            .send()
+            .await;
+    });
+
+    // Push a real MP3-ish frame so the transcoder doesn't error out before we
+    // attach. Then sleep long enough for the source to register.
+    let frame: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(8_192).collect();
+    body_tx.send(Ok(Bytes::from(frame))).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{stream_port}/stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let h = resp.headers();
+    assert_eq!(h.get("icy-br").and_then(|v| v.to_str().ok()), Some("64"));
+    assert_eq!(
+        h.get("ice-audio-info").and_then(|v| v.to_str().ok()),
+        Some("samplerate=22050;channels=2;bitrate=64"),
+    );
+
+    drop(resp);
+    drop(body_tx);
+    let _ = source_handle.await;
+    shutdown.cancel();
+}
