@@ -232,9 +232,7 @@ mod tests {
             }
         }
         if let Ok(tail) = pipeline.flush() {
-            if !tail.is_empty() {
-                any_output = true;
-            }
+            any_output |= !tail.is_empty();
         }
 
         assert!(any_output, "pipeline must produce output when resampling 48000 Hz to 44100 Hz");

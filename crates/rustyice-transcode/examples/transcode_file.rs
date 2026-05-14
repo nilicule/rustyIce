@@ -16,7 +16,6 @@
 ///
 /// Default output bitrate: 128 kbps.  Set tracing level to debug to see the
 /// chunk counter and first/last-4 samples handed to LAME on each call.
-
 use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
 use rustyice_transcode::TranscodePipeline;
 use std::{env, fs};

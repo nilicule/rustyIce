@@ -9,7 +9,6 @@
 /// Usage:
 ///   cargo run --example stream_decode_to_wav --manifest-path crates/rustyice-transcode/Cargo.toml \
 ///       -- /path/to/source.mp3
-
 use rustyice_transcode::StreamDecoder;
 use std::{env, fs::File, io::Write};
 

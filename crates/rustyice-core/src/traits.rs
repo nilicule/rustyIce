@@ -82,12 +82,14 @@ pub trait OutputProtocol: Send + Sync + 'static {
 
     /// Stream packets to the listener until it disconnects, is kicked,
     /// or `cancellation` is triggered.
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &self,
         writer: Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>,
         subscription: Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send>>,
         mount_info: Arc<crate::mount::MountInfo>,
         current_title: Arc<arc_swap::ArcSwap<Option<String>>>,
+        source_overlay: Arc<arc_swap::ArcSwap<Option<crate::mount::SourceOverlay>>>,
         icy_requested: bool,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<ListenerStats, OutputError>;

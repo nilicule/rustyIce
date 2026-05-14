@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use rustyice_core::error::OutputError;
-use rustyice_core::mount::MountInfo;
+use rustyice_core::mount::{MountInfo, SourceOverlay};
 use rustyice_core::traits::OutputProtocol;
 use rustyice_core::types::{AudioPayload, DisconnectReason, ListenerStats, StreamPacket};
 use std::pin::Pin;
@@ -34,6 +34,7 @@ impl OutputProtocol for HttpPassthroughOutput {
         mut subscription: Pin<Box<dyn futures::Stream<Item = Arc<StreamPacket>> + Send>>,
         mount_info: Arc<MountInfo>,
         current_title: Arc<arc_swap::ArcSwap<Option<String>>>,
+        source_overlay: Arc<arc_swap::ArcSwap<Option<SourceOverlay>>>,
         icy_requested: bool,
         cancellation: CancellationToken,
     ) -> Result<ListenerStats, OutputError> {
@@ -62,6 +63,7 @@ impl OutputProtocol for HttpPassthroughOutput {
                             data,
                             &mount_info,
                             &current_title,
+                            &source_overlay,
                             self.icy_metaint,
                             &mut bytes_since_meta,
                             &mut bytes_sent,
@@ -84,11 +86,13 @@ impl OutputProtocol for HttpPassthroughOutput {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_with_icy(
     writer: &mut Pin<Box<dyn AsyncWrite + Send + Unpin>>,
     data: &bytes::Bytes,
     info: &MountInfo,
     current_title: &Arc<arc_swap::ArcSwap<Option<String>>>,
+    source_overlay: &Arc<arc_swap::ArcSwap<Option<SourceOverlay>>>,
     metaint: usize,
     bytes_since_meta: &mut usize,
     bytes_sent: &mut u64,
@@ -104,7 +108,7 @@ async fn write_with_icy(
         offset = chunk_end;
 
         if *bytes_since_meta >= metaint {
-            let frame = build_icy_frame(info, current_title);
+            let frame = build_icy_frame(info, current_title, source_overlay);
             writer.write_all(&frame).await.map_err(OutputError::Io)?;
             *bytes_since_meta = 0;
         }
@@ -115,13 +119,21 @@ async fn write_with_icy(
 fn build_icy_frame(
     info: &MountInfo,
     current_title: &Arc<arc_swap::ArcSwap<Option<String>>>,
+    source_overlay: &Arc<arc_swap::ArcSwap<Option<SourceOverlay>>>,
 ) -> Vec<u8> {
     let title_snap = current_title.load_full();
+    let overlay_snap = source_overlay.load_full();
+    let overlay_ref = overlay_snap.as_ref().as_ref();
+
     let title = title_snap
         .as_deref()
+        .or_else(|| overlay_ref.and_then(|o| o.name.as_deref()))
         .or(info.metadata.name.as_deref())
         .unwrap_or("");
-    let url = info.metadata.url.as_deref().unwrap_or("");
+    let url = overlay_ref
+        .and_then(|o| o.url.as_deref())
+        .or(info.metadata.url.as_deref())
+        .unwrap_or("");
     if title.is_empty() && url.is_empty() {
         return vec![0x00];
     }
@@ -141,7 +153,7 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use futures::stream;
-    use rustyice_core::mount::{MountInfo, MountMetadata};
+    use rustyice_core::mount::{MountInfo, MountMetadata, SourceOverlay};
     use rustyice_core::types::{AudioPayload, CodecId, EncodedPacket, StreamPacket};
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
@@ -158,6 +170,10 @@ mod tests {
     }
 
     fn empty_title() -> Arc<arc_swap::ArcSwap<Option<String>>> {
+        Arc::new(arc_swap::ArcSwap::from_pointee(None))
+    }
+
+    fn empty_overlay() -> Arc<arc_swap::ArcSwap<Option<SourceOverlay>>> {
         Arc::new(arc_swap::ArcSwap::from_pointee(None))
     }
 
@@ -185,7 +201,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(payload)]));
 
         let stats = HttpPassthroughOutput::default()
-            .run(writer, subscription, make_mount_info(None), empty_title(), false, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(None), empty_title(), empty_overlay(), false, CancellationToken::new())
             .await
             .unwrap();
 
@@ -204,7 +220,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(&payload)]));
 
         HttpPassthroughOutput { icy_metaint: 8 }
-            .run(writer, subscription, make_mount_info(Some("Test")), empty_title(), true, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(Some("Test")), empty_title(), empty_overlay(), true, CancellationToken::new())
             .await
             .unwrap();
 
@@ -225,7 +241,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(&[0u8; 4])]));
 
         HttpPassthroughOutput { icy_metaint: 4 }
-            .run(writer, subscription, make_mount_info(None), empty_title(), true, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(None), empty_title(), empty_overlay(), true, CancellationToken::new())
             .await
             .unwrap();
 
@@ -245,7 +261,7 @@ mod tests {
         let token_clone = token.clone();
         let handle = tokio::spawn(async move {
             HttpPassthroughOutput::default()
-                .run(writer, subscription, make_mount_info(None), empty_title(), false, token_clone)
+                .run(writer, subscription, make_mount_info(None), empty_title(), empty_overlay(), false, token_clone)
                 .await
         });
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -283,7 +299,7 @@ mod tests {
             Arc::new(arc_swap::ArcSwap::from_pointee(Some("Artist - Song".to_string())));
 
         HttpPassthroughOutput { icy_metaint: 8 }
-            .run(writer, subscription, make_mount_info(Some("Mount Name")), title, true, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(Some("Mount Name")), title, empty_overlay(), true, CancellationToken::new())
             .await
             .unwrap();
 
@@ -305,7 +321,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(&payload)]));
 
         HttpPassthroughOutput { icy_metaint: 8 }
-            .run(writer, subscription, make_mount_info(Some("Mount Name")), empty_title(), true, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(Some("Mount Name")), empty_title(), empty_overlay(), true, CancellationToken::new())
             .await
             .unwrap();
 
@@ -324,7 +340,7 @@ mod tests {
             Box::pin(stream::iter(vec![make_packet(&[0u8; 4])]));
 
         HttpPassthroughOutput { icy_metaint: 4 }
-            .run(writer, subscription, make_mount_info(None), empty_title(), true, CancellationToken::new())
+            .run(writer, subscription, make_mount_info(None), empty_title(), empty_overlay(), true, CancellationToken::new())
             .await
             .unwrap();
 
@@ -333,5 +349,83 @@ mod tests {
         // 4 audio bytes + 1 length byte (0 = no meta).
         assert_eq!(received.len(), 5);
         assert_eq!(received[4], 0x00);
+    }
+
+    #[tokio::test]
+    async fn icy_meta_falls_back_to_overlay_name_when_no_admin_title() {
+        use arc_swap::ArcSwap;
+        // current_title = None, overlay.name = "From Source", config name = "Cfg"
+        let info = Arc::new(MountInfo {
+            path: "/m".to_string(),
+            codec: CodecId::MP3,
+            source_password: "x".to_string(),
+            max_listeners: None,
+            metadata: MountMetadata {
+                name: Some("Cfg".to_string()),
+                ..Default::default()
+            },
+        });
+        let current_title = Arc::new(ArcSwap::from_pointee(None));
+        let overlay = Arc::new(ArcSwap::from_pointee(Some(SourceOverlay {
+            name: Some("From Source".to_string()),
+            url: Some("https://overlay".to_string()),
+            ..Default::default()
+        })));
+        let frame = build_icy_frame(&info, &current_title, &overlay);
+        let s = String::from_utf8_lossy(&frame[1..]);
+        assert!(
+            s.contains("StreamTitle='From Source';"),
+            "expected overlay name in StreamTitle, got: {s:?}"
+        );
+        assert!(
+            s.contains("StreamUrl='https://overlay';"),
+            "expected overlay url in StreamUrl, got: {s:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn icy_meta_admin_title_beats_overlay_name() {
+        use arc_swap::ArcSwap;
+        let info = Arc::new(MountInfo {
+            path: "/m".to_string(),
+            codec: CodecId::MP3,
+            source_password: "x".to_string(),
+            max_listeners: None,
+            metadata: MountMetadata::default(),
+        });
+        let current_title = Arc::new(ArcSwap::from_pointee(Some("Artist - Song".to_string())));
+        let overlay = Arc::new(ArcSwap::from_pointee(Some(SourceOverlay {
+            name: Some("From Source".to_string()),
+            ..Default::default()
+        })));
+        let frame = build_icy_frame(&info, &current_title, &overlay);
+        let s = String::from_utf8_lossy(&frame[1..]);
+        assert!(
+            s.contains("StreamTitle='Artist - Song';"),
+            "admin title must win, got: {s:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn icy_meta_falls_through_to_config_when_overlay_silent() {
+        use arc_swap::ArcSwap;
+        let info = Arc::new(MountInfo {
+            path: "/m".to_string(),
+            codec: CodecId::MP3,
+            source_password: "x".to_string(),
+            max_listeners: None,
+            metadata: MountMetadata {
+                name: Some("Cfg Name".to_string()),
+                url: Some("https://cfg".to_string()),
+                ..Default::default()
+            },
+        });
+        let current_title = Arc::new(ArcSwap::from_pointee(None));
+        // Overlay present but no name/url fields set.
+        let overlay = Arc::new(ArcSwap::from_pointee(Some(SourceOverlay::default())));
+        let frame = build_icy_frame(&info, &current_title, &overlay);
+        let s = String::from_utf8_lossy(&frame[1..]);
+        assert!(s.contains("StreamTitle='Cfg Name';"), "got: {s:?}");
+        assert!(s.contains("StreamUrl='https://cfg';"), "got: {s:?}");
     }
 }

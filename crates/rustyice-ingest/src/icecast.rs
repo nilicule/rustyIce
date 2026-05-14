@@ -594,7 +594,7 @@ mod tests {
             .iter()
             .filter_map(|p| match &p.payload {
                 AudioPayload::Encoded(enc) => Some(enc.data.to_vec()),
-                _ => None,
+                AudioPayload::Decoded(_) => None,
             })
             .flatten()
             .collect();
@@ -609,7 +609,8 @@ mod tests {
             .position(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0);
         assert_eq!(sync, Some(0), "first published byte should be an MP3 sync word");
         assert_eq!(published[2], 0x90, "should be 128 kbps frame (not the false 112 kbps in cover art)");
-        assert_eq!(stats.bytes_received as usize, published.len());
+        #[allow(clippy::cast_possible_truncation)]
+        { assert_eq!(stats.bytes_received as usize, published.len()); }
     }
 
     #[tokio::test]

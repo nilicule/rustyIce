@@ -329,7 +329,7 @@ async fn listener_receives_audio_from_source() {
         .expect("request error");
 
     assert!(
-        first_chunk.map_or(false, |b| !b.is_empty()),
+        first_chunk.is_some_and(|b| !b.is_empty()),
         "listener should have received some audio bytes"
     );
 
@@ -429,7 +429,7 @@ async fn dynamic_mount_created_when_default_source_password_matches() {
         .await
         .expect("timed out waiting for audio")
         .expect("chunk error");
-    assert!(chunk.map_or(false, |b| !b.is_empty()));
+    assert!(chunk.is_some_and(|b| !b.is_empty()));
 
     // Once the source finishes and the disconnect guard runs, the dynamic
     // mount is removed and new listeners get 404 again.

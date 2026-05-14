@@ -95,7 +95,7 @@ mod tests {
         Arc::new(StreamPacket {
             payload: AudioPayload::Encoded(EncodedPacket {
                 codec: CodecId::MP3,
-                data: Bytes::from(vec![seq as u8; 4]),
+                data: Bytes::from(vec![u8::try_from(seq % 256).unwrap_or(0); 4]),
             }),
             pts: Duration::from_millis(seq * 26),
             sequence: seq,
@@ -132,11 +132,11 @@ mod tests {
     async fn subscriber_count_tracks_live_subscriptions() {
         let bus = TokioBroadcastBus::new(16);
         assert_eq!(bus.subscriber_count(), 0);
-        let _sub1 = bus.subscribe();
+        let sub1 = bus.subscribe();
         assert_eq!(bus.subscriber_count(), 1);
         let _sub2 = bus.subscribe();
         assert_eq!(bus.subscriber_count(), 2);
-        drop(_sub1);
+        drop(sub1);
         tokio::task::yield_now().await;
         assert_eq!(bus.subscriber_count(), 1);
     }

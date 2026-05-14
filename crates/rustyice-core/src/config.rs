@@ -285,13 +285,12 @@ slow_listener_grace_s = 2
     #[test]
     fn transcode_config_parses_global() {
         let src = format!(
-            r#"{}
+            r#"{BASE_CONFIG}
 [transcode]
 format       = "mp3"
 sample_rate  = 44100
 bitrate_kbps = 128
-"#,
-            BASE_CONFIG
+"#
         );
         let cfg: Config = toml::from_str(&src).unwrap();
         let tc = cfg.transcode.as_ref().unwrap();
@@ -303,7 +302,7 @@ bitrate_kbps = 128
     #[test]
     fn transcode_config_per_mount_overrides_global() {
         let src = format!(
-            r#"{}
+            r#"{BASE_CONFIG}
 [transcode]
 format       = "mp3"
 sample_rate  = 44100
@@ -317,8 +316,7 @@ source_password = "secret"
 format       = "mp3"
 sample_rate  = 22050
 bitrate_kbps = 64
-"#,
-            BASE_CONFIG
+"#
         );
         let cfg: Config = toml::from_str(&src).unwrap();
         let effective = cfg.effective_transcode(&cfg.mounts[0]).unwrap();
@@ -329,7 +327,7 @@ bitrate_kbps = 64
     #[test]
     fn transcode_config_falls_back_to_global() {
         let src = format!(
-            r#"{}
+            r#"{BASE_CONFIG}
 [transcode]
 format       = "mp3"
 sample_rate  = 44100
@@ -338,8 +336,7 @@ bitrate_kbps = 128
 [[mounts]]
 path            = "/stream"
 source_password = "secret"
-"#,
-            BASE_CONFIG
+"#
         );
         let cfg: Config = toml::from_str(&src).unwrap();
         let effective = cfg.effective_transcode(&cfg.mounts[0]).unwrap();
@@ -350,12 +347,11 @@ source_password = "secret"
     #[test]
     fn transcode_config_none_when_absent() {
         let src = format!(
-            r#"{}
+            r#"{BASE_CONFIG}
 [[mounts]]
 path            = "/stream"
 source_password = "secret"
-"#,
-            BASE_CONFIG
+"#
         );
         let cfg: Config = toml::from_str(&src).unwrap();
         assert!(cfg.effective_transcode(&cfg.mounts[0]).is_none());
