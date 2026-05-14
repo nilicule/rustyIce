@@ -11,29 +11,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Source archives (.tar.gz, .zip) ────────────────────────────────────────
-  source:
-    name: source archives
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.release.tag_name }}
-
-      - name: Build source archives
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          PREFIX="rustyice-${TAG}"
-          git archive --format=tar.gz --prefix="${PREFIX}/" -o "${PREFIX}.tar.gz" HEAD
-          git archive --format=zip    --prefix="${PREFIX}/" -o "${PREFIX}.zip"    HEAD
-
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          gh release upload "$TAG" "rustyice-${TAG}.tar.gz" "rustyice-${TAG}.zip" --clobber
-
   # ── Single-file binaries (one per OS/arch) ─────────────────────────────────
   binary:
     name: binary ${{ matrix.name }}
