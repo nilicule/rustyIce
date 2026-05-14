@@ -1,4 +1,6 @@
+use arc_swap::ArcSwap;
 use metrics_exporter_prometheus::PrometheusHandle;
+use rustyice_core::config::Config;
 use rustyice_core::mount::MountRegistry;
 use rustyice_core::traits::AuthBackend;
 use std::collections::HashMap;
@@ -170,5 +172,5 @@ pub struct AdminState {
     /// Port the public stream listener is bound to. Used by the landing page
     /// to build clickable links to active mounts.
     pub stream_port: u16,
-    pub config: Arc<arc_swap::ArcSwap<rustyice_core::config::Config>>,
+    pub config: Arc<ArcSwap<Config>>,
 }
