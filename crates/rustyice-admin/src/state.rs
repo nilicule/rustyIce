@@ -170,4 +170,5 @@ pub struct AdminState {
     /// Port the public stream listener is bound to. Used by the landing page
     /// to build clickable links to active mounts.
     pub stream_port: u16,
+    pub config: Arc<arc_swap::ArcSwap<rustyice_core::config::Config>>,
 }

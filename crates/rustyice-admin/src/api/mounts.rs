@@ -9,6 +9,12 @@ pub struct MountStatus {
     pub path: String,
     pub codec: String,
     pub name: Option<String>,
+    pub description: Option<String>,
+    pub genre: Option<String>,
+    pub url: Option<String>,
+    pub public: Option<bool>,
+    pub audio_info: Option<String>,
+    pub bitrate_kbps: Option<u32>,
     pub title: Option<String>,
     pub source_connected: bool,
     pub listener_count: usize,
@@ -16,18 +22,27 @@ pub struct MountStatus {
 }
 
 pub async fn list_mounts(State(state): State<AdminState>) -> Json<Vec<MountStatus>> {
+    use std::sync::atomic::Ordering;
+    let cfg = state.config.load();
     let statuses = state
         .mounts
         .list()
         .into_iter()
         .map(|m| {
-            use std::sync::atomic::Ordering;
             let info = m.info.load();
             let title = m.current_title.load_full().as_ref().clone();
+            let transcode = mount_transcode(&cfg, &info.path);
+            let identity = m.effective_identity(transcode.as_ref());
             MountStatus {
                 path: info.path.clone(),
                 codec: info.codec.as_str().to_string(),
-                name: info.metadata.name.clone(),
+                name: identity.name,
+                description: identity.description,
+                genre: identity.genre,
+                url: identity.url,
+                public: identity.public,
+                audio_info: identity.audio_info,
+                bitrate_kbps: identity.bitrate_kbps,
                 title,
                 source_connected: m.source_connected.load(Ordering::Relaxed),
                 listener_count: m.listener_count(),
@@ -36,6 +51,17 @@ pub async fn list_mounts(State(state): State<AdminState>) -> Json<Vec<MountStatu
         })
         .collect();
     Json(statuses)
+}
+
+fn mount_transcode(
+    cfg: &rustyice_core::config::Config,
+    mount_path: &str,
+) -> Option<rustyice_core::config::TranscodeConfig> {
+    if let Some(mc) = cfg.mounts.iter().find(|m| m.path == mount_path) {
+        cfg.effective_transcode(mc).cloned()
+    } else {
+        cfg.transcode.clone()
+    }
 }
 
 #[derive(Serialize)]

@@ -112,6 +112,7 @@ async fn build_test_server_with(
         sessions: SessionStore::new(std::time::Duration::from_secs(3600)),
         version: env!("CARGO_PKG_VERSION"),
         stream_port: 0,
+        config: app_state.config.clone(),
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -224,6 +225,7 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
         sessions: sessions.clone(),
         version: env!("CARGO_PKG_VERSION"),
         stream_port: 0,
+        config: app_state.config.clone(),
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -565,6 +567,7 @@ async fn build_test_server_with_transcode(bitrate_kbps: u32) -> (u16, u16, Cance
         sessions: SessionStore::new(std::time::Duration::from_secs(3600)),
         version: env!("CARGO_PKG_VERSION"),
         stream_port: 0,
+        config: app_state.config.clone(),
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -3,7 +3,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use rustyice_admin::{build_admin_router, AdminState, ListenerMap, SessionStore};
-use rustyice_core::config::Config;
+use rustyice_core::config::{
+    AuthConfig, Config, LimitsConfig, LogFormat, LoggingConfig, ServerConfig,
+};
+use arc_swap::ArcSwap;
 use rustyice_core::error::AuthError;
 use rustyice_core::mount::{ActiveMount, MountInfo, MountMetadata, MountRegistry};
 use rustyice_core::traits::{AuthBackend, BroadcastBus};
@@ -51,6 +54,24 @@ fn make_state() -> AdminState {
 fn make_state_with_admin(password: Option<&str>) -> AdminState {
     let recorder = PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
+    let cfg = Config {
+        server: ServerConfig {
+            stream_bind: "127.0.0.1:0".parse().unwrap(),
+            admin_bind: "127.0.0.1:0".parse().unwrap(),
+            hostname: "localhost".to_string(),
+        },
+        logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
+        auth: AuthConfig::default(),
+        limits: LimitsConfig {
+            max_listeners_global: 100,
+            ring_size: 64,
+            slow_listener_grace_s: 2,
+            source_max_kbps: None,
+        },
+        mounts: vec![],
+        tls: None,
+        transcode: None,
+    };
     AdminState {
         mounts: MountRegistry::new(),
         listeners: ListenerMap::new(),
@@ -60,6 +81,7 @@ fn make_state_with_admin(password: Option<&str>) -> AdminState {
         sessions: SessionStore::new(Duration::from_secs(3600)),
         version: "test",
         stream_port: 8000,
+        config: Arc::new(ArcSwap::from_pointee(cfg)),
     }
 }
 

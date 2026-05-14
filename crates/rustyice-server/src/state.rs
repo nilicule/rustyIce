@@ -35,6 +35,7 @@ impl AppState {
             sessions: SessionStore::new(Duration::from_hours(24)),
             version: env!("CARGO_PKG_VERSION"),
             stream_port: self.config.load().server.stream_bind.port(),
+            config: self.config.clone(),
         }
     }
 }
