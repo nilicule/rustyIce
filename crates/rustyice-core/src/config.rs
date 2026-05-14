@@ -96,6 +96,7 @@ pub struct MountConfig {
 #[serde(rename_all = "lowercase")]
 pub enum TranscodeFormat {
     Mp3,
+    Vorbis,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -342,6 +343,22 @@ source_password = "secret"
         let effective = cfg.effective_transcode(&cfg.mounts[0]).unwrap();
         assert_eq!(effective.sample_rate, 44100);
         assert_eq!(effective.bitrate_kbps, 128);
+    }
+
+    #[test]
+    fn transcode_format_parses_vorbis() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[transcode]
+format       = "vorbis"
+sample_rate  = 44100
+bitrate_kbps = 96
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let tc = cfg.transcode.as_ref().unwrap();
+        assert_eq!(tc.format, TranscodeFormat::Vorbis);
+        assert_eq!(tc.bitrate_kbps, 96);
     }
 
     #[test]

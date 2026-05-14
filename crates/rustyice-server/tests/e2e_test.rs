@@ -469,7 +469,7 @@ async fn graceful_shutdown_closes_connections() {
     }
 }
 
-// Helper: build a short MP3 stream (about 1 second of silence) for test use
+// Helper: build a short MP3 stream (about 5 seconds of silence) for test use
 fn generate_test_mp3() -> Vec<u8> {
     let mut enc = rustyice_transcode::LameEncoder::new(44100, 44100, 2, 128).unwrap();
     // 5 seconds: enough data for multiple decode batches after the decoder warmup
@@ -481,8 +481,28 @@ fn generate_test_mp3() -> Vec<u8> {
     data
 }
 
-// Helper: build a test server with transcode config on /stream
+// Helper: build a short Ogg Vorbis stream (~3 seconds of silence) for test use.
+fn generate_test_vorbis() -> Vec<u8> {
+    let mut enc = rustyice_transcode::VorbisEncoder::new(44100, 2, 96, &[]).unwrap();
+    let silence = vec![0.0f32; 44100 * 2 * 3];
+    let mut data = enc.encode(&silence).unwrap();
+    data.extend_from_slice(&enc.flush().unwrap());
+    data
+}
+
 async fn build_test_server_with_transcode(bitrate_kbps: u32) -> (u16, u16, CancellationToken) {
+    build_test_server_with_transcode_cfg(TranscodeConfig {
+        format: TranscodeFormat::Mp3,
+        sample_rate: 44100,
+        bitrate_kbps,
+    })
+    .await
+}
+
+// Helper: build a test server with an arbitrary transcode config on /stream.
+async fn build_test_server_with_transcode_cfg(
+    transcode: TranscodeConfig,
+) -> (u16, u16, CancellationToken) {
     let cfg = Config {
         server: ServerConfig {
             stream_bind: "127.0.0.1:0".parse().unwrap(),
@@ -508,11 +528,7 @@ async fn build_test_server_with_transcode(bitrate_kbps: u32) -> (u16, u16, Cance
             description: None,
             genre: None,
             url: None,
-            transcode: Some(TranscodeConfig {
-                format: TranscodeFormat::Mp3,
-                sample_rate: 44100,
-                bitrate_kbps,
-            }),
+            transcode: Some(transcode),
         }],
         tls: None,
         transcode: None,
@@ -1238,5 +1254,188 @@ async fn butt_style_source_streams_audio_to_listener() {
     // Close source — server should respond with 200 OK before closing.
     drop(sock);
     drop(listener_resp);
+    shutdown.cancel();
+}
+
+/// Open a streaming source PUT and return `(handle, body_tx)`. The source
+/// stays connected until the test drops `body_tx`. The initial payload is
+/// pushed synchronously so the server has captured the codec before
+/// `open_streaming_source` returns.
+async fn open_streaming_source(
+    stream_port: u16,
+    content_type: &'static str,
+    initial_payload: Vec<u8>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
+) {
+    use bytes::Bytes;
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx));
+    let url = format!("http://127.0.0.1:{stream_port}/stream");
+    let handle = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&url)
+            .header("Authorization", "Basic dGVzdHBhc3M=") // base64("testpass")
+            .header("Content-Type", content_type)
+            .body(body)
+            .send()
+            .await;
+    });
+    body_tx.send(Ok(Bytes::from(initial_payload))).await.unwrap();
+    (handle, body_tx)
+}
+
+/// Connect a listener, snapshot the response headers without consuming the
+/// body. Detailed body-level transcoding behavior is verified by the
+/// `rustyice-transcode` unit tests; here we just verify the listener-facing
+/// HTTP contract (Content-Type, ICY headers) for each combination.
+async fn listener_headers(stream_port: u16, icy: bool) -> reqwest::header::HeaderMap {
+    let mut req = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{stream_port}/stream"));
+    if icy {
+        req = req.header("Icy-Metadata", "1");
+    }
+    let resp = req.send().await.expect("listener GET failed");
+    assert_eq!(resp.status(), 200);
+    resp.headers().clone()
+}
+
+/// Drive a source into `/stream`, wait briefly for the server to register
+/// it, then run `check` against the listener-facing response headers.
+/// The source is kept alive for the duration of the check via a streaming
+/// body that we hold; afterwards it is dropped + aborted so the test can
+/// exit immediately.
+async fn with_running_source<F>(
+    stream_port: u16,
+    source_ct: &'static str,
+    source_body: Vec<u8>,
+    settle: Duration,
+    check: F,
+) where
+    F: AsyncFnOnce(),
+{
+    let (source_handle, body_tx) =
+        open_streaming_source(stream_port, source_ct, source_body).await;
+    tokio::time::sleep(settle).await;
+    check().await;
+    drop(body_tx);
+    source_handle.abort();
+}
+
+#[tokio::test]
+async fn vorbis_source_passthrough_advertises_application_ogg() {
+    let (stream_port, _, shutdown) = build_test_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    with_running_source(
+        stream_port,
+        "application/ogg",
+        generate_test_vorbis(),
+        Duration::from_millis(150),
+        || async {
+            let h = listener_headers(stream_port, false).await;
+            assert_eq!(
+                h.get("content-type").and_then(|v| v.to_str().ok()),
+                Some("application/ogg"),
+            );
+            // Vorbis must never advertise icy-metaint.
+            let h_icy = listener_headers(stream_port, true).await;
+            assert!(
+                h_icy.get("icy-metaint").is_none(),
+                "Vorbis output must not advertise icy-metaint",
+            );
+        },
+    )
+    .await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn vorbis_source_transcoded_to_mp3_advertises_audio_mpeg() {
+    let (stream_port, _, shutdown) =
+        build_test_server_with_transcode_cfg(TranscodeConfig {
+            format: TranscodeFormat::Mp3,
+            sample_rate: 44100,
+            bitrate_kbps: 64,
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    with_running_source(
+        stream_port,
+        "application/ogg",
+        generate_test_vorbis(),
+        Duration::from_millis(150),
+        || async {
+            let h = listener_headers(stream_port, true).await;
+            assert_eq!(
+                h.get("content-type").and_then(|v| v.to_str().ok()),
+                Some("audio/mpeg"),
+            );
+            assert_eq!(
+                h.get("icy-metaint").and_then(|v| v.to_str().ok()),
+                Some("8192"),
+                "MP3 output must advertise icy-metaint",
+            );
+        },
+    )
+    .await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn mp3_source_transcoded_to_vorbis_advertises_application_ogg() {
+    let (stream_port, _, shutdown) =
+        build_test_server_with_transcode_cfg(TranscodeConfig {
+            format: TranscodeFormat::Vorbis,
+            sample_rate: 44100,
+            bitrate_kbps: 96,
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    with_running_source(
+        stream_port,
+        "audio/mpeg",
+        generate_test_mp3(),
+        Duration::from_millis(150),
+        || async {
+            let h = listener_headers(stream_port, true).await;
+            assert_eq!(
+                h.get("content-type").and_then(|v| v.to_str().ok()),
+                Some("application/ogg"),
+            );
+            assert!(
+                h.get("icy-metaint").is_none(),
+                "Vorbis output must not advertise icy-metaint even when client asked",
+            );
+        },
+    )
+    .await;
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn vorbis_source_transcoded_to_vorbis_advertises_application_ogg() {
+    let (stream_port, _, shutdown) =
+        build_test_server_with_transcode_cfg(TranscodeConfig {
+            format: TranscodeFormat::Vorbis,
+            sample_rate: 44100,
+            bitrate_kbps: 64,
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    with_running_source(
+        stream_port,
+        "application/ogg",
+        generate_test_vorbis(),
+        Duration::from_millis(150),
+        || async {
+            let h = listener_headers(stream_port, false).await;
+            assert_eq!(
+                h.get("content-type").and_then(|v| v.to_str().ok()),
+                Some("application/ogg"),
+            );
+        },
+    )
+    .await;
     shutdown.cancel();
 }

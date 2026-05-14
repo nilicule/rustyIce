@@ -19,7 +19,7 @@ username        = "admin"
 password_bcrypt = "$2y$12$tWRporih5P9huFKMLo7ozO.9WvKgTRlQBFRlF8Y4AsGglyRY7qvr."
 
 [transcode]
-format       = "mp3"
+format       = "vorbis"        # "mp3" or "vorbis"
 sample_rate  = 44100
 bitrate_kbps = 128
 

@@ -1,6 +1,8 @@
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
-use rustyice_core::config::TranscodeConfig;
+use rustyice_codec::OggHeaderCapture;
+use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
 use rustyice_core::error::IngestError;
 use rustyice_core::traits::{BroadcastBus, IngestProtocol};
 use rustyice_core::types::{AudioPayload, CodecId, EncodedPacket, SourceStats, StreamPacket};
@@ -17,12 +19,25 @@ pub struct IcecastIngest {
     /// If set, reads are paced to this rate. TCP backpressure slows the sender.
     max_rate_bps: Option<u64>,
     transcode: Option<TranscodeConfig>,
+    /// Vorbis comments embedded in the encoder when the transcode target is
+    /// Vorbis. Derived from the mount's metadata. Ignored for MP3 output.
+    transcode_comments: Vec<(String, String)>,
+    /// When set and the *output* codec is Ogg Vorbis, captures the three
+    /// Vorbis header pages from the start of the published stream and stores
+    /// them at this sink so listeners joining mid-broadcast can be primed.
+    header_capture_sink: Option<Arc<ArcSwap<Option<Bytes>>>>,
 }
 
 impl IcecastIngest {
     #[must_use]
     pub fn new(chunk_size: usize) -> Self {
-        Self { chunk_size, max_rate_bps: None, transcode: None }
+        Self {
+            chunk_size,
+            max_rate_bps: None,
+            transcode: None,
+            transcode_comments: Vec::new(),
+            header_capture_sink: None,
+        }
     }
 
     /// Set a maximum ingestion rate (bytes/sec). Returns `self` for chaining.
@@ -37,6 +52,33 @@ impl IcecastIngest {
     pub fn with_transcode(mut self, config: TranscodeConfig) -> Self {
         self.transcode = Some(config);
         self
+    }
+
+    /// Set the Vorbis comments embedded in the encoder when the transcode
+    /// target is Vorbis. Comments are static — set once at stream start, never
+    /// updated mid-stream.
+    #[must_use]
+    pub fn with_transcode_comments(mut self, comments: Vec<(String, String)>) -> Self {
+        self.transcode_comments = comments;
+        self
+    }
+
+    /// Set the destination for captured Ogg Vorbis header pages.  When the
+    /// output codec is Vorbis, the first three header pages from the
+    /// published byte stream are stored at `sink` so the stream router can
+    /// prepend them to listeners joining mid-broadcast.
+    #[must_use]
+    pub fn with_header_capture(mut self, sink: Arc<ArcSwap<Option<Bytes>>>) -> Self {
+        self.header_capture_sink = Some(sink);
+        self
+    }
+
+    fn output_codec(&self, source_codec: &CodecId) -> CodecId {
+        match self.transcode.as_ref().map(|tc| &tc.format) {
+            Some(TranscodeFormat::Mp3) => CodecId::MP3,
+            Some(TranscodeFormat::Vorbis) => CodecId::VORBIS,
+            None => source_codec.clone(),
+        }
     }
 }
 
@@ -62,9 +104,26 @@ impl IngestProtocol for IcecastIngest {
     ) -> Result<SourceStats, IngestError> {
         let mut pipeline: Option<TranscodePipeline> = self.transcode
             .as_ref()
-            .map(|cfg| TranscodePipeline::new(cfg.clone()))
+            .map(|cfg| {
+                TranscodePipeline::new(
+                    cfg.clone(),
+                    codec.clone(),
+                    self.transcode_comments.clone(),
+                )
+            })
             .transpose()
             .map_err(|e| IngestError::TranscodeInit(e.to_string()))?;
+
+        let output_codec = self.output_codec(&codec);
+        // Only run the header capture for Ogg Vorbis output.  For MP3 we leave
+        // `header_capture` unset and never feed it.
+        let mut header_capture: Option<OggHeaderCapture> = match (
+            output_codec == CodecId::VORBIS,
+            self.header_capture_sink.as_ref(),
+        ) {
+            (true, Some(_)) => Some(OggHeaderCapture::new()),
+            _ => None,
+        };
 
         let mut stats = SourceStats::default();
         let start = Instant::now();
@@ -128,7 +187,7 @@ impl IngestProtocol for IcecastIngest {
                                 Ok(tail) if !tail.is_empty() => {
                                     let packet = Arc::new(StreamPacket {
                                         payload: AudioPayload::Encoded(EncodedPacket {
-                                            codec: codec.clone(),
+                                            codec: output_codec.clone(),
                                             data: tail,
                                         }),
                                         pts: start.elapsed(),
@@ -146,12 +205,20 @@ impl IngestProtocol for IcecastIngest {
                     };
                     let n = data.len();
 
-                    if !source_rate_locked && codec == CodecId::MP3
-                        && let Some(bps) = rustyice_codec::mp3::scan_bitrate_bps(&data)
-                    {
-                        debug!("MP3 bitrate detected: {}kbps", bps * 8 / 1000);
-                        source_rate = Some(bps);
-                        source_rate_locked = true;
+                    if !source_rate_locked {
+                        if codec == CodecId::MP3
+                            && let Some(bps) = rustyice_codec::mp3::scan_bitrate_bps(&data)
+                        {
+                            debug!("MP3 bitrate detected: {}kbps", bps * 8 / 1000);
+                            source_rate = Some(bps);
+                            source_rate_locked = true;
+                        } else if codec == CodecId::VORBIS
+                            && let Some(bps) = rustyice_codec::scan_nominal_bitrate_bps(&data)
+                        {
+                            debug!("Vorbis nominal bitrate detected: {}kbps", bps * 8 / 1000);
+                            source_rate = Some(bps);
+                            source_rate_locked = true;
+                        }
                     }
 
                     stats.bytes_received += n as u64;
@@ -171,9 +238,24 @@ impl IngestProtocol for IcecastIngest {
 
                     if let Some(data) = packet_data {
                         output_bytes += data.len() as u64;
+                        // Vorbis listeners joining mid-stream need the three
+                        // header pages from the start of the bus output.
+                        // Capture them once, then publish to the mount sink
+                        // and stop feeding the accumulator.
+                        if let Some(cap) = header_capture.as_mut() {
+                            cap.push(&data);
+                            if cap.is_settled() {
+                                if let Some(headers) = cap.header_bytes() {
+                                    if let Some(sink) = self.header_capture_sink.as_ref() {
+                                        sink.store(Arc::new(Some(headers)));
+                                    }
+                                }
+                                header_capture = None;
+                            }
+                        }
                         let packet = Arc::new(StreamPacket {
                             payload: AudioPayload::Encoded(EncodedPacket {
-                                codec: codec.clone(),
+                                codec: output_codec.clone(),
                                 data,
                             }),
                             pts: start.elapsed(),

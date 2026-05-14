@@ -2,6 +2,7 @@ use crate::config::TranscodeConfig;
 use crate::traits::BroadcastBus;
 use crate::types::CodecId;
 use arc_swap::ArcSwap;
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
@@ -91,6 +92,12 @@ pub struct ActiveMount {
     /// disconnect. Lock-free read on the listener hot path. `None` = no source
     /// connected, or source supplied nothing.
     pub source_overlay: Arc<ArcSwap<Option<SourceOverlay>>>,
+    /// Codec-format prefix bytes that must be sent to every new listener
+    /// before joining the live bus stream. For Ogg Vorbis output (passthrough
+    /// *or* transcoded) this carries the three Vorbis header pages — a Vorbis
+    /// decoder cannot decode audio packets without them, so mid-stream join
+    /// would otherwise produce silence/errors. `None` for MP3 output.
+    pub header_bytes: Arc<ArcSwap<Option<Bytes>>>,
 }
 
 impl ActiveMount {
@@ -104,6 +111,7 @@ impl ActiveMount {
             source_cancel: std::sync::Mutex::new(None),
             current_title: Arc::new(ArcSwap::from_pointee(None)),
             source_overlay: Arc::new(ArcSwap::from_pointee(None)),
+            header_bytes: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 

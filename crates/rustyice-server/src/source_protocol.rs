@@ -85,11 +85,13 @@ pub async fn handle_source_connection(
     {
         let cfg = state.config.load();
         let transcode = mount_transcode(&cfg, &mount_path);
-        if transcode.is_some() && codec != CodecId::MP3 {
+        if transcode.is_some()
+            && !matches!(codec, CodecId::MP3 | CodecId::VORBIS)
+        {
             let _ = write_status(
                 &mut write_half,
                 415,
-                "mount requires MP3 source (transcoding is enabled)",
+                "mount requires MP3 or Ogg Vorbis source (transcoding is enabled)",
             )
             .await;
             return Ok(());
@@ -108,6 +110,19 @@ pub async fn handle_source_connection(
     let source_cancel = state.shutdown.child_token();
     *mount.source_cancel.lock().unwrap() = Some(source_cancel.clone());
     *mount.connected_at.lock().unwrap() = Some(Instant::now());
+
+    // Update the mount's advertised codec to match the connected source.  For
+    // pre-configured mounts the registry was built with `CodecId::MP3` as a
+    // placeholder; without this swap, a Vorbis passthrough source would still
+    // serve listeners with `Content-Type: audio/mpeg` until reconfigured.
+    {
+        let current_info = mount.info.load();
+        if current_info.codec != codec {
+            let mut new_info = (**current_info).clone();
+            new_info.codec = codec.clone();
+            mount.info.store(Arc::new(new_info));
+        }
+    }
 
     let overlay = parse_source_overlay(&headers);
     mount.source_overlay.store(Arc::new(Some(overlay.clone())));
@@ -167,7 +182,7 @@ pub async fn handle_source_connection(
         None => Box::pin(chained),
     };
 
-    let ingest = build_ingest_for_mount(&state, &mount_path);
+    let ingest = build_ingest_for_mount(&state, &mount_path, &mount);
     let result = ingest
         .run(body_reader, mount.bus.clone(), codec, source_cancel)
         .await;
@@ -318,18 +333,48 @@ fn create_dynamic_mount(
     mount
 }
 
-fn build_ingest_for_mount(state: &AppState, mount_path: &str) -> IcecastIngest {
+fn build_ingest_for_mount(
+    state: &AppState,
+    mount_path: &str,
+    mount: &Arc<ActiveMount>,
+) -> IcecastIngest {
     let cfg = state.config.load();
     let transcode = mount_transcode(&cfg, mount_path);
+    let metadata = mount.info.load().metadata.clone();
 
     let mut ingest = IcecastIngest::default();
     if let Some(kbps) = cfg.limits.source_max_kbps {
         ingest = ingest.with_max_rate(u64::from(kbps) * 1000 / 8);
     }
     if let Some(tc) = transcode {
-        ingest = ingest.with_transcode(tc);
+        ingest = ingest
+            .with_transcode(tc)
+            .with_transcode_comments(build_vorbis_comments(&metadata));
     }
-    ingest
+    ingest.with_header_capture(mount.header_bytes.clone())
+}
+
+/// Build the Vorbis comment block embedded in the encoder when the transcode
+/// target is Vorbis. Keys follow the Xiph Vorbis comment convention.
+fn build_vorbis_comments(meta: &MountMetadata) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    if let Some(s) = &meta.name {
+        v.push(("TITLE".to_string(), s.clone()));
+    }
+    if let Some(s) = &meta.description {
+        v.push(("DESCRIPTION".to_string(), s.clone()));
+    }
+    if let Some(s) = &meta.genre {
+        v.push(("GENRE".to_string(), s.clone()));
+    }
+    if let Some(s) = &meta.url {
+        v.push(("LOCATION".to_string(), s.clone()));
+    }
+    v.push((
+        "ENCODER".to_string(),
+        format!("rustyice/{}", env!("CARGO_PKG_VERSION")),
+    ));
+    v
 }
 
 struct SourceDisconnectGuard {
@@ -348,6 +393,7 @@ impl Drop for SourceDisconnectGuard {
         *self.mount.source_cancel.lock().unwrap() = None;
         *self.mount.connected_at.lock().unwrap() = None;
         self.mount.source_overlay.store(Arc::new(None));
+        self.mount.header_bytes.store(Arc::new(None));
         if let Some(registry) = &self.mounts {
             let _ = registry.remove(&self.mount_path);
             info!("source disconnected: mount={} (dynamic mount removed)", self.mount_path);
@@ -381,7 +427,7 @@ fn detect_codec_from_content_type(headers: &HeaderMap) -> CodecId {
         .and_then(|v| v.to_str().ok())
     {
         Some(ct) if ct.contains("mpeg") => CodecId::MP3,
-        Some(ct) if ct.contains("ogg") => CodecId::VORBIS,
+        Some(ct) if ct.contains("ogg") || ct.contains("vorbis") => CodecId::VORBIS,
         Some(ct) if ct.contains("aac") => CodecId::AAC,
         _ => CodecId::MP3,
     }

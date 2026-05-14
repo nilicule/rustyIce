@@ -9,6 +9,7 @@ rustyice-codec = { path = "../rustyice-codec" }
 symphonia      = { workspace = true }
 rubato         = { workspace = true }
 mp3lame-sys    = { workspace = true }
+vorbis_rs      = { workspace = true }
 bytes          = { workspace = true }
 thiserror      = { workspace = true }
 tracing        = { workspace = true }

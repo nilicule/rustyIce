@@ -9,6 +9,7 @@
 /// Usage:
 ///   cargo run --example stream_decode_to_wav --manifest-path crates/rustyice-transcode/Cargo.toml \
 ///       -- /path/to/source.mp3
+use rustyice_core::types::CodecId;
 use rustyice_transcode::StreamDecoder;
 use std::{env, fs::File, io::Write};
 
@@ -39,7 +40,7 @@ fn main() {
     let mp3_bytes = std::fs::read(&path).expect("cannot read input file");
     println!("Input: {} ({} bytes)", path, mp3_bytes.len());
 
-    let mut decoder = StreamDecoder::new();
+    let mut decoder = StreamDecoder::new(CodecId::MP3);
     let mut all_pcm: Vec<f32> = Vec::new();
     let mut detected_rate = 0u32;
     let mut detected_channels = 0u8;

@@ -17,6 +17,7 @@
 /// Default output bitrate: 128 kbps.  Set tracing level to debug to see the
 /// chunk counter and first/last-4 samples handed to LAME on each call.
 use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
+use rustyice_core::types::CodecId;
 use rustyice_transcode::TranscodePipeline;
 use std::{env, fs};
 use tracing_subscriber::EnvFilter;
@@ -39,7 +40,8 @@ fn main() {
         bitrate_kbps: kbps,
     };
 
-    let mut pipeline = TranscodePipeline::new(config).expect("pipeline init failed");
+    let mut pipeline = TranscodePipeline::new(config, CodecId::MP3, vec![])
+        .expect("pipeline init failed");
 
     let chunk_size = 4096; // production chunk size
     let mut output: Vec<u8> = Vec::new();

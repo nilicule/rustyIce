@@ -8,6 +8,9 @@ use axum::{
     routing::get,
     Router,
 };
+use rustyice_core::config::TranscodeFormat;
+use rustyice_core::types::CodecId;
+use tokio::io::AsyncWriteExt;
 
 /// Builds the router for listener traffic on the stream port.
 ///
@@ -59,15 +62,32 @@ async fn listener_handler(
         return (StatusCode::SERVICE_UNAVAILABLE, "mount full").into_response();
     }
 
-    let icy_requested = headers
-        .get("icy-metadata")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.trim() == "1");
-
     let mount_info = mount.info.load_full();
+    let transcode = mount_transcode(&cfg, &mount_path);
+    let output_codec = resolve_output_codec(&mount_info.codec, transcode.as_ref());
+    let content_type = content_type_for(&output_codec);
+    // ICY interleaved metadata is an MP3-only convention.  Vorbis streams
+    // carry metadata in-stream as Vorbis comments, and injecting an ICY
+    // byte every 8192 bytes would corrupt Ogg page framing.
+    let icy_requested = output_codec == CodecId::MP3
+        && headers
+            .get("icy-metadata")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim() == "1");
+    let header_bytes_snap = mount.header_bytes.load_full();
+
     let current_title = mount.current_title.clone();
     let source_overlay = mount.source_overlay.clone();
-    let subscription = mount.bus.subscribe();
+    // When we've captured Vorbis header pages and are about to prepend them
+    // to the response, skip the bus's history snapshot — otherwise the
+    // listener would receive the same headers twice (once via prepend, once
+    // via history) and libvorbis would treat the second set as a stream
+    // restart, producing a brief blip followed by silence.
+    let subscription = if header_bytes_snap.as_ref().is_some() {
+        mount.bus.subscribe_live()
+    } else {
+        mount.bus.subscribe()
+    };
 
     let listener_cancel = state.shutdown.child_token();
     let listener_id = state
@@ -83,6 +103,18 @@ async fn listener_handler(
     let cancel_clone = listener_cancel.clone();
 
     tokio::spawn(async move {
+        let mut writer = writer;
+        // Vorbis listeners joining mid-broadcast need the ident/comment/setup
+        // header pages prepended before the live bus stream — without them
+        // libvorbis on the client cannot decode any audio packets.  For MP3
+        // `header_bytes_snap` stays `None` and this is a no-op.
+        if let Some(headers) = header_bytes_snap.as_ref().as_ref() {
+            if let Err(e) = writer.write_all(headers).await {
+                tracing::warn!("listener {listener_id}: header prefix write failed: {e}");
+                listeners_ref.deregister(listener_id);
+                return;
+            }
+        }
         match output
             .run(writer, subscription, mount_info, current_title, source_overlay, icy_requested, cancel_clone)
             .await
@@ -102,12 +134,11 @@ async fn listener_handler(
 
     let stream = tokio_util::io::ReaderStream::new(read_end);
 
-    let transcode = mount_transcode(&cfg, &mount_path);
     let identity = mount.effective_identity(transcode.as_ref());
 
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "audio/mpeg");
+        .header(header::CONTENT_TYPE, content_type);
 
     if let Some(v) = &identity.name {
         builder = builder.header("icy-name", v);
@@ -138,4 +169,24 @@ async fn listener_handler(
     builder
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// The codec actually written to the listener: the transcode target if one
+/// is configured, otherwise the passthrough source codec.
+fn resolve_output_codec(
+    source_codec: &CodecId,
+    transcode: Option<&rustyice_core::config::TranscodeConfig>,
+) -> CodecId {
+    match transcode.map(|tc| &tc.format) {
+        Some(TranscodeFormat::Mp3) => CodecId::MP3,
+        Some(TranscodeFormat::Vorbis) => CodecId::VORBIS,
+        None => source_codec.clone(),
+    }
+}
+
+fn content_type_for(codec: &CodecId) -> &'static str {
+    match *codec {
+        CodecId::VORBIS => "application/ogg",
+        _ => "audio/mpeg",
+    }
 }

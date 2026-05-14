@@ -1,3 +1,6 @@
+use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
+
+use crate::vorbis_encoder::VorbisEncoder;
 use crate::TranscodeError;
 
 pub struct LameEncoder {
@@ -100,6 +103,52 @@ impl Drop for LameEncoder {
     fn drop(&mut self) {
         unsafe {
             mp3lame_sys::lame_close(self.gfp);
+        }
+    }
+}
+
+/// Unified encoder front-end used by [`crate::TranscodePipeline`]. Dispatches
+/// to the right concrete encoder based on the configured target format.
+pub enum Encoder {
+    Lame(LameEncoder),
+    Vorbis(VorbisEncoder),
+}
+
+impl Encoder {
+    /// Build an encoder for `config`. `comments` is only consulted for Vorbis
+    /// (passed through as Vorbis comments) and ignored for MP3.
+    pub fn build(
+        config: &TranscodeConfig,
+        channels: u8,
+        comments: &[(String, String)],
+    ) -> Result<Self, TranscodeError> {
+        match config.format {
+            TranscodeFormat::Mp3 => Ok(Self::Lame(LameEncoder::new(
+                config.sample_rate,
+                config.sample_rate,
+                channels,
+                config.bitrate_kbps,
+            )?)),
+            TranscodeFormat::Vorbis => Ok(Self::Vorbis(VorbisEncoder::new(
+                config.sample_rate,
+                channels,
+                config.bitrate_kbps,
+                comments,
+            )?)),
+        }
+    }
+
+    pub fn encode(&mut self, samples: &[f32]) -> Result<Vec<u8>, TranscodeError> {
+        match self {
+            Self::Lame(e) => e.encode(samples),
+            Self::Vorbis(e) => e.encode(samples),
+        }
+    }
+
+    pub fn flush(&mut self) -> Result<Vec<u8>, TranscodeError> {
+        match self {
+            Self::Lame(e) => e.flush(),
+            Self::Vorbis(e) => e.flush(),
         }
     }
 }

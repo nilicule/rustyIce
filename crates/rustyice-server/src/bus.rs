@@ -65,21 +65,35 @@ impl BroadcastBus for TokioBroadcastBus {
             hist.iter().skip(skip).cloned().collect();
         drop(hist);
 
-        let live = BroadcastStream::new(receiver).filter_map(|r| {
-            futures::future::ready(match r {
-                Ok(p) => Some(p),
-                Err(BroadcastStreamRecvError::Lagged(n)) => {
-                    warn!("subscriber lagged: missed {n} packets");
-                    None
-                }
-            })
-        });
-        Box::pin(futures::stream::iter(history_snapshot).chain(live))
+        Box::pin(futures::stream::iter(history_snapshot).chain(live_stream(receiver)))
+    }
+
+    fn subscribe_live(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>> {
+        // Hold the history lock while subscribing so the receiver's first
+        // packet is the next one published — no race where a packet could
+        // appear in both the (omitted) history and the live stream.
+        let _hist = self.history.lock().unwrap();
+        let receiver = self.sender.subscribe();
+        Box::pin(live_stream(receiver))
     }
 
     fn subscriber_count(&self) -> usize {
         self.sender.receiver_count()
     }
+}
+
+fn live_stream(
+    receiver: broadcast::Receiver<Arc<StreamPacket>>,
+) -> impl Stream<Item = Arc<StreamPacket>> + Send + 'static {
+    BroadcastStream::new(receiver).filter_map(|r| {
+        futures::future::ready(match r {
+            Ok(p) => Some(p),
+            Err(BroadcastStreamRecvError::Lagged(n)) => {
+                warn!("subscriber lagged: missed {n} packets");
+                None
+            }
+        })
+    })
 }
 
 #[cfg(test)]

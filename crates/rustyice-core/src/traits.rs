@@ -45,8 +45,22 @@ pub trait BroadcastBus: Send + Sync + 'static {
     /// Packets are `Arc`-wrapped so subscribers pay only a pointer clone.
     fn publish(&self, packet: Arc<StreamPacket>);
 
-    /// Create a new subscriber. Receives packets from this point forward.
+    /// Create a new subscriber. Receives packets from this point forward,
+    /// preceded by a short history snapshot so clients can fill playback
+    /// buffers without waiting for live data.
     fn subscribe(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>>;
+
+    /// Like [`subscribe`](Self::subscribe), but does **not** prepend the
+    /// history snapshot. Used by Vorbis listeners that join mid-stream: the
+    /// stream router has already written the captured Vorbis header pages to
+    /// the response, and history would replay them a second time — which
+    /// libvorbis treats as an unexpected stream restart, producing a brief
+    /// blip followed by silence.
+    fn subscribe_live(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>> {
+        // Default falls back to the history-bearing variant so existing
+        // implementations don't have to opt in.
+        self.subscribe()
+    }
 
     /// Instantaneous subscriber count (for admin API and /metrics).
     fn subscriber_count(&self) -> usize;

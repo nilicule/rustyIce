@@ -1,17 +1,28 @@
 use bytes::Bytes;
 use rustyice_core::config::TranscodeConfig;
+use rustyice_core::types::CodecId;
 
 use crate::{
     TranscodeError,
     decoder::StreamDecoder,
-    encoder::LameEncoder,
+    encoder::Encoder,
     resampler::PcmResampler,
 };
 
 pub struct TranscodePipeline {
     config: TranscodeConfig,
     decoder: StreamDecoder,
-    encoder: LameEncoder,
+    /// `None` until the first decoded frame arrives. Construction is deferred
+    /// because Vorbis encoders write 3 header pages into their sink the moment
+    /// they're built; building a placeholder encoder eagerly with guessed
+    /// channels (and then rebuilding when the real channel count arrives)
+    /// would emit two distinct Vorbis chains back-to-back, with the captured
+    /// header pages belonging to the discarded first chain.
+    encoder: Option<Encoder>,
+    /// Vorbis comments embedded in the encoder. Empty for MP3 output, derived
+    /// from `MountMetadata` for Vorbis output. Stored so the encoder can be
+    /// rebuilt with the same metadata if source channels change mid-stream.
+    comments: Vec<(String, String)>,
     // Set after first frame decoded; encoder is rebuilt if these differ from config
     source_sample_rate: Option<u32>,
     source_channels: Option<u8>,
@@ -24,19 +35,19 @@ impl TranscodePipeline {
         self.resampler.is_some()
     }
 
-    pub fn new(config: TranscodeConfig) -> Result<Self, TranscodeError> {
-        // Encoder is built eagerly with config sample rate and a placeholder source rate.
-        // It will be rebuilt on the first frame if source rate differs.
-        let encoder = LameEncoder::new(
-            config.sample_rate,
-            config.sample_rate,
-            2, // default to stereo; will rebuild on first frame if mono
-            config.bitrate_kbps,
-        )?;
+    /// Build a pipeline that decodes from `source_codec` and encodes per
+    /// `config`. `comments` are embedded as Vorbis comments when the target
+    /// is Vorbis and ignored for MP3.
+    pub fn new(
+        config: TranscodeConfig,
+        source_codec: CodecId,
+        comments: Vec<(String, String)>,
+    ) -> Result<Self, TranscodeError> {
         Ok(Self {
             config,
-            decoder: StreamDecoder::new(),
-            encoder,
+            decoder: StreamDecoder::new(source_codec),
+            encoder: None,
+            comments,
             source_sample_rate: None,
             source_channels: None,
             resampler: None,
@@ -60,45 +71,48 @@ impl TranscodePipeline {
     pub fn flush(&mut self) -> Result<Bytes, TranscodeError> {
         let mut combined = Vec::new();
 
-        // Flush any remaining bytes from the decoder first.
+        // Flush any remaining bytes from the decoder first. Symphonia init may
+        // report sample rate/channels even when no audio packets decoded — in
+        // that case `process_pcm` still constructs the encoder so its final
+        // state (Vorbis EOS, LAME tail) is emitted below.
         let (pcm, sample_rate, channels) = self.decoder.flush_eof()?;
-        if !pcm.is_empty() && sample_rate != 0 {
+        if sample_rate != 0 && channels != 0 {
             let out = self.process_pcm(pcm, sample_rate, channels)?;
             combined.extend_from_slice(&out);
         }
 
-        if let Some(ref mut resampler) = self.resampler {
-            let tail_pcm = resampler.flush()?;
-            if !tail_pcm.is_empty() {
-                let encoded = self.encoder.encode(&tail_pcm)?;
-                combined.extend_from_slice(&encoded);
+        if let Some(ref mut encoder) = self.encoder {
+            if let Some(ref mut resampler) = self.resampler {
+                let tail_pcm = resampler.flush()?;
+                if !tail_pcm.is_empty() {
+                    let encoded = encoder.encode(&tail_pcm)?;
+                    combined.extend_from_slice(&encoded);
+                }
             }
+            let flushed = encoder.flush()?;
+            combined.extend_from_slice(&flushed);
         }
-
-        let flushed = self.encoder.flush()?;
-        combined.extend_from_slice(&flushed);
         Ok(Bytes::from(combined))
     }
 
     fn process_pcm(&mut self, pcm: Vec<f32>, sample_rate: u32, channels: u8) -> Result<Bytes, TranscodeError> {
         let mut output: Vec<u8> = Vec::new();
 
-        // Rebuild encoder if source format differs from what encoder expects
+        // Build or rebuild the encoder if the source format has changed (or
+        // we've never seen a frame yet).
         if self.source_sample_rate != Some(sample_rate) || self.source_channels != Some(channels) {
-            self.source_sample_rate = Some(sample_rate);
-            self.source_channels = Some(channels);
-            // Flush the old encoder's internal LAME buffer tail before replacing it.
-            if let Ok(tail) = self.encoder.flush()
+            // If we already had an encoder, drain its tail before replacing
+            // it. For Vorbis this also emits an EOS page, producing a chained
+            // Ogg stream — acceptable for mid-stream format changes.
+            if let Some(ref mut old) = self.encoder
+                && let Ok(tail) = old.flush()
                 && !tail.is_empty()
             {
                 output.extend_from_slice(&tail);
             }
-            self.encoder = LameEncoder::new(
-                self.config.sample_rate, // in_sample_rate = target (we resample before encode)
-                self.config.sample_rate,
-                channels,
-                self.config.bitrate_kbps,
-            )?;
+            self.source_sample_rate = Some(sample_rate);
+            self.source_channels = Some(channels);
+            self.encoder = Some(Encoder::build(&self.config, channels, &self.comments)?);
             self.resampler = if sample_rate != self.config.sample_rate {
                 Some(PcmResampler::new(
                     sample_rate,
@@ -124,7 +138,11 @@ impl TranscodePipeline {
             };
         }
 
-        let encoded = self.encoder.encode(&pcm)?;
+        let encoded = self
+            .encoder
+            .as_mut()
+            .expect("encoder built above when source format changed")
+            .encode(&pcm)?;
         output.extend_from_slice(&encoded);
         Ok(Bytes::from(output))
     }
@@ -135,7 +153,7 @@ mod tests {
     use super::*;
     use rustyice_core::config::TranscodeFormat;
 
-    fn test_config() -> TranscodeConfig {
+    fn mp3_config() -> TranscodeConfig {
         TranscodeConfig {
             format: TranscodeFormat::Mp3,
             sample_rate: 44100,
@@ -143,16 +161,28 @@ mod tests {
         }
     }
 
+    fn vorbis_config() -> TranscodeConfig {
+        TranscodeConfig {
+            format: TranscodeFormat::Vorbis,
+            sample_rate: 44100,
+            bitrate_kbps: 96,
+        }
+    }
+
+    fn mp3_pipeline() -> TranscodePipeline {
+        TranscodePipeline::new(mp3_config(), CodecId::MP3, vec![]).unwrap()
+    }
+
     #[test]
     fn push_empty_returns_empty() {
-        let mut p = TranscodePipeline::new(test_config()).unwrap();
+        let mut p = mp3_pipeline();
         let out = p.push(&[]).unwrap();
         assert!(out.is_empty());
     }
 
     #[test]
     fn push_garbage_returns_empty() {
-        let mut p = TranscodePipeline::new(test_config()).unwrap();
+        let mut p = mp3_pipeline();
         let out = p.push(&[0u8; 1024]).unwrap();
         assert!(out.is_empty());
     }
@@ -179,7 +209,7 @@ mod tests {
         );
 
         // Now feed through pipeline in small chunks
-        let mut pipeline = TranscodePipeline::new(test_config()).unwrap();
+        let mut pipeline = mp3_pipeline();
         let mut all_output = Vec::new();
         let mut error_count = 0usize;
         for chunk in mp3_data.chunks(4096) {
@@ -205,7 +235,6 @@ mod tests {
     #[test]
     fn rate_mismatch_produces_output() {
         use crate::encoder::LameEncoder;
-        use rustyice_core::config::TranscodeFormat;
 
         // Generate MP3 at 48000 Hz
         let mut enc = LameEncoder::new(48000, 48000, 2, 128).unwrap();
@@ -216,11 +245,15 @@ mod tests {
         assert!(!mp3_48k.is_empty(), "LAME produced no output — encoder broken or environment misconfigured");
 
         // Pipeline targeting 44100 Hz — resampler should activate
-        let mut pipeline = TranscodePipeline::new(TranscodeConfig {
-            format: TranscodeFormat::Mp3,
-            sample_rate: 44100,
-            bitrate_kbps: 64,
-        })
+        let mut pipeline = TranscodePipeline::new(
+            TranscodeConfig {
+                format: TranscodeFormat::Mp3,
+                sample_rate: 44100,
+                bitrate_kbps: 64,
+            },
+            CodecId::MP3,
+            vec![],
+        )
         .unwrap();
 
         let mut any_output = false;
@@ -240,6 +273,91 @@ mod tests {
             pipeline.resampler_is_active(),
             "resampler must be initialized when source rate differs from target rate"
         );
+    }
+
+    /// Synthesize a low-amplitude tone and encode it as Vorbis. Silence
+    /// compresses so heavily libvorbis emits no decodable audio packets at
+    /// 3 s — pseudo-random noise guarantees the test fixture has both a
+    /// well-formed bitstream and decodable payload.
+    fn generate_vorbis_noise(sample_rate: u32, channels: u8, seconds: u32) -> Vec<u8> {
+        let mut enc = crate::VorbisEncoder::new(sample_rate, channels, 96, &[]).unwrap();
+        let total = sample_rate as usize * channels as usize * seconds as usize;
+        let mut state: u32 = 0x1234_5678;
+        let pcm: Vec<f32> = (0..total)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((state >> 16) as f32 / u16::MAX as f32 - 0.5) * 0.05
+            })
+            .collect();
+        let mut data = enc.encode(&pcm).unwrap();
+        data.extend_from_slice(&enc.flush().unwrap());
+        data
+    }
+
+    #[test]
+    fn vorbis_to_mp3_pipeline_produces_mp3_sync_words() {
+        // Longer fixture so the decoder fully probes the format via the
+        // streaming `push()` path, not the eager `flush_eof` fallback.
+        let ogg = generate_vorbis_noise(44100, 2, 10);
+        assert!(!ogg.is_empty(), "vorbis encoder produced empty stream");
+
+        let mut pipeline = TranscodePipeline::new(mp3_config(), CodecId::VORBIS, vec![]).unwrap();
+        let mut out = Vec::new();
+        for chunk in ogg.chunks(4096) {
+            out.extend_from_slice(&pipeline.push(chunk).unwrap());
+        }
+        out.extend_from_slice(&pipeline.flush().unwrap());
+
+        assert!(!out.is_empty(), "vorbis→mp3 transcode produced no output");
+        assert!(
+            out.windows(2).any(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0),
+            "output must contain MP3 sync words",
+        );
+    }
+
+    #[test]
+    fn mp3_to_vorbis_pipeline_produces_ogg_pages_and_comments() {
+        use crate::encoder::LameEncoder;
+
+        let mut enc = LameEncoder::new(44100, 44100, 2, 128).unwrap();
+        let silence = vec![0.0_f32; 44100 * 2 * 3];
+        let mut mp3_data = enc.encode(&silence).unwrap();
+        mp3_data.extend_from_slice(&enc.flush().unwrap());
+
+        let comments = vec![
+            ("TITLE".to_string(), "MyStation".to_string()),
+            ("GENRE".to_string(), "Jazz".to_string()),
+        ];
+        let mut pipeline =
+            TranscodePipeline::new(vorbis_config(), CodecId::MP3, comments).unwrap();
+
+        let mut out = Vec::new();
+        for chunk in mp3_data.chunks(4096) {
+            out.extend_from_slice(&pipeline.push(chunk).unwrap());
+        }
+        out.extend_from_slice(&pipeline.flush().unwrap());
+
+        assert!(!out.is_empty(), "mp3→vorbis transcode produced no output");
+        assert_eq!(&out[..4], b"OggS", "output must begin with an Ogg page");
+        assert!(
+            out.windows(b"TITLE=MyStation".len()).any(|w| w == b"TITLE=MyStation"),
+            "Vorbis comments must be embedded in output",
+        );
+    }
+
+    #[test]
+    fn vorbis_to_vorbis_pipeline_reencodes_at_target_bitrate() {
+        let ogg = generate_vorbis_noise(44100, 2, 10);
+
+        let mut pipeline = TranscodePipeline::new(vorbis_config(), CodecId::VORBIS, vec![]).unwrap();
+        let mut out = Vec::new();
+        for chunk in ogg.chunks(4096) {
+            out.extend_from_slice(&pipeline.push(chunk).unwrap());
+        }
+        out.extend_from_slice(&pipeline.flush().unwrap());
+
+        assert!(!out.is_empty(), "vorbis→vorbis transcode produced no output");
+        assert_eq!(&out[..4], b"OggS");
     }
 
     fn generate_vbr_mp3() -> Vec<u8> {
@@ -276,19 +394,12 @@ mod tests {
 
     #[test]
     fn vbr_stream_processes_without_error() {
-        use rustyice_core::config::TranscodeFormat;
-
         // Generate a real VBR MP3 with a Xing header
         let mp3_data = generate_vbr_mp3();
 
         assert!(!mp3_data.is_empty(), "LAME produced no output — encoder broken or environment misconfigured");
 
-        let mut pipeline = TranscodePipeline::new(TranscodeConfig {
-            format: TranscodeFormat::Mp3,
-            sample_rate: 44100,
-            bitrate_kbps: 64,
-        })
-        .unwrap();
+        let mut pipeline = TranscodePipeline::new(mp3_config(), CodecId::MP3, vec![]).unwrap();
 
         // Feed in small chunks simulating streaming delivery
         let mut all_output = Vec::new();

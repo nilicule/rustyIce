@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
+use rustyice_core::types::CodecId;
 use symphonia::core::{
     audio::SampleBuffer,
     codecs::DecoderOptions,
@@ -12,8 +13,13 @@ use symphonia::core::{
 };
 use crate::TranscodeError;
 
-/// Minimum bytes to accumulate before attempting format probe.
-const INIT_THRESHOLD: usize = 8_192;
+/// Minimum bytes to accumulate before attempting format probe. Sized so
+/// Symphonia's OggReader probe (which reads the full Vorbis header chain plus
+/// at least one audio packet to verify the codec) can complete in a single
+/// pass against the buffered bytes; below this threshold the probe runs out
+/// of data, errors, and destructively consumes the BOS page — leaving us
+/// unable to retry. For live sources this adds ~0.5 s of warmup at 1 Mbps.
+const INIT_THRESHOLD: usize = 65_536;
 
 struct PipeBuf {
     data: VecDeque<u8>,
@@ -61,31 +67,29 @@ struct DecoderInner {
 
 pub struct StreamDecoder {
     buf: Arc<Mutex<PipeBuf>>,
+    /// Source codec.  Selects the Symphonia format hint and how `frame_staging`
+    /// finds complete-unit boundaries: MP3 frames vs Ogg pages.
+    source_codec: CodecId,
     /// Accumulates bytes before we have enough data to probe the format.
     pending: Vec<u8>,
-    /// Accumulates post-init bytes until at least one complete frame is available.
-    /// Only complete frames are forwarded to `buf` so that Symphonia's format
-    /// reader never receives a `WouldBlock` mid-frame.  A mid-frame WouldBlock
-    /// causes the MpegReader to resync from an arbitrary offset, skipping frames
-    /// and producing pervasive audio corruption.
+    /// Accumulates post-init bytes until at least one complete frame (MP3) or
+    /// page (Ogg) is available.  Only complete units are forwarded to `buf` so
+    /// that Symphonia's format reader never receives a `WouldBlock` mid-unit.
+    /// A mid-frame WouldBlock causes the MpegReader to resync from an arbitrary
+    /// offset, skipping frames and producing pervasive audio corruption.
     frame_staging: Vec<u8>,
     inner: Option<DecoderInner>,
 }
 
-impl Default for StreamDecoder {
-    fn default() -> Self {
+impl StreamDecoder {
+    pub fn new(source_codec: CodecId) -> Self {
         Self {
             buf: Arc::new(Mutex::new(PipeBuf { data: VecDeque::new(), eof: false })),
+            source_codec,
             pending: Vec::new(),
             frame_staging: Vec::new(),
             inner: None,
         }
-    }
-}
-
-impl StreamDecoder {
-    pub fn new() -> Self {
-        Self::default()
     }
 
     /// Push raw bytes from the source. Returns (interleaved_f32, sample_rate, channels).
@@ -142,14 +146,25 @@ impl StreamDecoder {
         self.drain_packets()
     }
 
-    /// Scan `frame_staging` for complete MP3 frames and move all bytes up to
-    /// (and including) the last complete frame into `buf`.  Any trailing partial
-    /// frame is left in `frame_staging` for the next push.
+    /// Scan `frame_staging` for complete units (MP3 frames or Ogg pages
+    /// depending on `source_codec`) and move all bytes up to (and including)
+    /// the last complete unit into `buf`. Any trailing partial unit is left in
+    /// `frame_staging` for the next push.
     ///
-    /// Any bytes before the first detected sync word are included in the flush —
-    /// they are the continuation of a frame that was partially present in the
+    /// Any bytes before the first detected boundary are included in the flush —
+    /// they are the continuation of a unit that was partially present in the
     /// init buffer and must reach Symphonia in order.
     fn stage_complete_frames_to_pipe(&mut self) {
+        match self.source_codec {
+            CodecId::VORBIS => self.stage_complete_ogg_pages(),
+            // Default to MP3-style sync-word scanning for everything else.
+            // Only MP3 and Vorbis are supported source codecs for transcoding;
+            // anything else would have been rejected upstream.
+            _ => self.stage_complete_mp3_frames(),
+        }
+    }
+
+    fn stage_complete_mp3_frames(&mut self) {
         let data = &self.frame_staging;
         let mut pos = 0usize;
         let mut last_complete_end = 0usize;
@@ -175,11 +190,37 @@ impl StreamDecoder {
         }
     }
 
+    fn stage_complete_ogg_pages(&mut self) {
+        let data = &self.frame_staging;
+        let mut pos = 0usize;
+        let mut last_complete_end = 0usize;
+
+        while pos + 27 <= data.len() {
+            if &data[pos..pos + 4] != b"OggS" {
+                pos += 1;
+                continue;
+            }
+            match rustyice_codec::ogg_page_size(&data[pos..]) {
+                Some(size) if pos + size <= data.len() => {
+                    last_complete_end = pos + size;
+                    pos = last_complete_end;
+                }
+                Some(_) => break, // page starts here but is incomplete; wait for more data
+                None => { pos += 1; } // false magic; advance
+            }
+        }
+
+        if last_complete_end > 0 {
+            let frames: Vec<u8> = self.frame_staging.drain(..last_complete_end).collect();
+            self.buf.lock().unwrap().data.extend(frames);
+        }
+    }
+
     fn try_init(&mut self) -> Result<(), TranscodeError> {
         let pipe = PipeSource(Arc::clone(&self.buf));
         let mss = MediaSourceStream::new(Box::new(pipe), Default::default());
         let mut hint = Hint::new();
-        hint.mime_type("audio/mpeg");
+        hint.mime_type(mime_for(&self.source_codec));
 
         let probed = symphonia::default::get_probe()
             .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
@@ -243,5 +284,12 @@ impl StreamDecoder {
         }
 
         Ok((samples, sample_rate, channels))
+    }
+}
+
+fn mime_for(codec: &CodecId) -> &'static str {
+    match *codec {
+        CodecId::VORBIS => "audio/ogg",
+        _ => "audio/mpeg",
     }
 }

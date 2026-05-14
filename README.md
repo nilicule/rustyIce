@@ -1,12 +1,12 @@
 # rustyIce
 
-A single-binary Icecast-compatible MP3 streaming server written in Rust.
+A single-binary Icecast-compatible streaming server written in Rust, supporting MP3 and Ogg Vorbis.
 
 ## Features
 
 - Icecast2-compatible source ingest (`SOURCE` and `PUT`)
-- MP3 streaming with automatic bitrate detection and real-time pacing
-- **Transcoding** — decode/re-encode to a consistent output; per-mount or global, passthrough when unset
+- MP3 and Ogg Vorbis streaming with automatic bitrate detection and real-time pacing
+- **Transcoding** — decode/re-encode to a consistent output; per-mount or global, passthrough when unset. Any combination of MP3 / Ogg Vorbis source and MP3 / Ogg Vorbis target.
 - Per-mount source passwords, plus an optional global password for dynamic mounts
 - Public landing page with one-click playback
 - Admin dashboard + REST API — kick-source / kick-listener, per-mount listener detail, Prometheus `/metrics`
@@ -25,7 +25,7 @@ chmod +x rustyice-*
 mv rustyice-* rustyice
 ```
 
-Or build from source — **prerequisites:** Rust 1.85+ (2024 edition), Cargo. For transcoding: a C toolchain and `libmp3lame` (`brew install lame` / `apt install libmp3lame-dev`).
+Or build from source — **prerequisites:** Rust 1.85+ (2024 edition), Cargo. For transcoding: a C toolchain and `libmp3lame` (`brew install lame` / `apt install libmp3lame-dev`). libvorbis and libogg are vendored by `vorbis_rs` and compiled during the build — no system package needed.
 
 ```sh
 git clone https://github.com/nilicule/rustyice.git
@@ -124,7 +124,7 @@ max_listeners   = 100               # omit for unlimited
 # When set, all source audio is decoded and re-encoded before delivery.
 # Overrides the global [transcode] block if both are set.
 # [mounts.transcode]
-# format       = "mp3"
+# format       = "mp3"      # "mp3" or "vorbis"
 # sample_rate  = 44100
 # bitrate_kbps = 128
 ```
@@ -133,11 +133,23 @@ max_listeners   = 100               # omit for unlimited
 
 rustyIce can decode incoming audio and re-encode it to a consistent format, so listeners always receive a predictable bitrate regardless of what the source is pushing (CBR, VBR, 320 kbps, etc.).
 
+Supported source/target combinations:
+
+| Source             | Target             | Notes                                       |
+|--------------------|--------------------|---------------------------------------------|
+| MP3                | MP3                | Re-encode at a different bitrate/sample rate. |
+| MP3                | Ogg Vorbis         | Decode MP3 → encode Vorbis (ABR).            |
+| Ogg Vorbis         | MP3                | Decode Vorbis → encode MP3.                  |
+| Ogg Vorbis         | Ogg Vorbis         | Re-encode at a different bitrate.            |
+| MP3 or Ogg Vorbis  | (none)             | Passthrough — source bytes broadcast as-is.  |
+
+Vorbis output advertises `Content-Type: application/ogg`. Listener-facing metadata is set once at stream start via Vorbis comments (derived from `name`, `description`, `genre`, `url` on the mount); ICY `icy-metaint` is never advertised for Vorbis streams. Vorbis listeners joining a live broadcast mid-stream are seamlessly primed with the three Vorbis header pages (identification / comment / setup) captured from the encoder's output.
+
 Add a global fallback that applies to all mounts without their own transcode config:
 
 ```toml
 [transcode]
-format       = "mp3"
+format       = "mp3"        # or "vorbis"
 sample_rate  = 44100
 bitrate_kbps = 128
 ```
@@ -159,16 +171,16 @@ path            = "/mobile"
 source_password = "hackme"
 
 [mounts.transcode]
-format       = "mp3"
+format       = "vorbis"     # Vorbis output for bandwidth-constrained listeners
 sample_rate  = 22050
 bitrate_kbps = 48
 ```
 
 No `[transcode]` section anywhere = transparent passthrough (default behaviour, zero overhead).
 
-Only MP3 sources are supported for transcoding. Connecting a non-MP3 source (Ogg, AAC) to a transcode-enabled mount returns `415 Unsupported Media Type`.
+Connecting a source whose codec is neither MP3 nor Ogg Vorbis (AAC, FLAC, …) to a transcode-enabled mount returns `415 Unsupported Media Type`.
 
-**Requirements:** transcoding uses LAME via C bindings — a C toolchain (`cc`, `libmp3lame`) must be present at build time.
+**Requirements:** transcoding uses LAME (MP3 encode) and libvorbis + libogg (Vorbis encode) via C bindings. A C toolchain is required at build time; `libmp3lame` must be present on the system, while libvorbis + libogg are vendored by the `vorbis_rs` crate and compiled automatically during `cargo build`.
 
 Send `SIGHUP` to hot-reload the config (mount metadata and auth credentials update without dropping listeners).
 

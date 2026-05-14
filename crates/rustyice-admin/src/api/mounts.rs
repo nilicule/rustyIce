@@ -2,6 +2,8 @@ use crate::state::AdminState;
 use axum::extract::{Path, State};
 use axum::Json;
 use axum::http::StatusCode;
+use rustyice_core::config::TranscodeFormat;
+use rustyice_core::types::CodecId;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -33,9 +35,10 @@ pub async fn list_mounts(State(state): State<AdminState>) -> Json<Vec<MountStatu
             let title = m.current_title.load_full().as_ref().clone();
             let transcode = mount_transcode(&cfg, &info.path);
             let identity = m.effective_identity(transcode.as_ref());
+            let output_codec = resolve_output_codec(&info.codec, transcode.as_ref());
             MountStatus {
                 path: info.path.clone(),
-                codec: info.codec.as_str().to_string(),
+                codec: output_codec.as_str().to_string(),
                 name: identity.name,
                 description: identity.description,
                 genre: identity.genre,
@@ -61,6 +64,20 @@ fn mount_transcode(
         cfg.effective_transcode(mc).cloned()
     } else {
         cfg.transcode.clone()
+    }
+}
+
+/// The codec listeners actually receive: the transcode target if one is
+/// configured, otherwise the passthrough source codec. Mirrors the resolution
+/// in `rustyice_server::stream_router` so admin/UI and listener responses agree.
+fn resolve_output_codec(
+    source_codec: &CodecId,
+    transcode: Option<&rustyice_core::config::TranscodeConfig>,
+) -> CodecId {
+    match transcode.map(|tc| &tc.format) {
+        Some(TranscodeFormat::Mp3) => CodecId::MP3,
+        Some(TranscodeFormat::Vorbis) => CodecId::VORBIS,
+        None => source_codec.clone(),
     }
 }
 
