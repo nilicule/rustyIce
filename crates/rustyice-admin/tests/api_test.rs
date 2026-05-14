@@ -67,6 +67,7 @@ fn make_state_with_admin(password: Option<&str>) -> AdminState {
             ring_size: 64,
             slow_listener_grace_s: 2,
             source_max_kbps: None,
+            burst_size: 65_536,
         },
         mounts: vec![],
         tls: None,

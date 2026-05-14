@@ -46,12 +46,14 @@ pub trait BroadcastBus: Send + Sync + 'static {
     fn publish(&self, packet: Arc<StreamPacket>);
 
     /// Create a new subscriber. Receives packets from this point forward,
-    /// preceded by a short history snapshot so clients can fill playback
-    /// buffers without waiting for live data.
+    /// preceded by a burst-on-connect prefix of recent stream bytes bounded
+    /// by [`LimitsConfig::burst_size`](crate::config::LimitsConfig::burst_size)
+    /// (or its per-mount override). Lets clients fill playback buffers
+    /// instantly instead of waiting for live data at real-time rates.
     fn subscribe(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>>;
 
     /// Like [`subscribe`](Self::subscribe), but does **not** prepend the
-    /// history snapshot. Used by Vorbis listeners that join mid-stream: the
+    /// burst prefix. Used by Vorbis listeners that join mid-stream: the
     /// stream router has already written the captured Vorbis header pages to
     /// the response, and history would replay them a second time — which
     /// libvorbis treats as an unexpected stream restart, producing a brief

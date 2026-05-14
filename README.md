@@ -6,6 +6,7 @@ A single-binary Icecast-compatible streaming server written in Rust, supporting 
 
 - Icecast2-compatible source ingest (`SOURCE` and `PUT`)
 - MP3 and Ogg Vorbis streaming with automatic bitrate detection and real-time pacing
+- Burst-on-connect — new listeners get an immediate prefill of recent audio (Icecast-compatible `burst_size`, default 64 KiB, per-mount override)
 - **Transcoding** — decode/re-encode to a consistent output; per-mount or global, passthrough when unset. Any combination of MP3 / Ogg Vorbis source and MP3 / Ogg Vorbis target.
 - Per-mount source passwords, plus an optional global password for dynamic mounts
 - Public landing page with one-click playback
@@ -101,6 +102,7 @@ format = "pretty"                   # pretty | json
 max_listeners_global  = 500
 ring_size             = 64          # broadcast ring buffer slots
 slow_listener_grace_s = 2
+burst_size            = 65536       # burst-on-connect bytes (0 to disable)
 # source_max_kbps     = 128         # optional: cap source ingest rate
 
 [auth]
@@ -119,6 +121,7 @@ name            = "My Radio"
 description     = "Optional description"
 genre           = "Music"
 max_listeners   = 100               # omit for unlimited
+# burst_size    = 32768             # optional per-mount override of [limits].burst_size
 
 # Optional: per-mount transcode config.
 # When set, all source audio is decoded and re-encoded before delivery.

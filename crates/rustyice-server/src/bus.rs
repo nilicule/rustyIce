@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use rustyice_core::traits::BroadcastBus;
-use rustyice_core::types::StreamPacket;
+use rustyice_core::types::{AudioPayload, StreamPacket};
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -8,35 +8,45 @@ use tokio::sync::broadcast;
 use tokio_stream::{wrappers::{errors::BroadcastStreamRecvError, BroadcastStream}, Stream};
 use tracing::warn;
 
-/// Fan-out bus backed by `tokio::sync::broadcast` with a rolling history
-/// buffer. New subscribers receive recent packets first so they can fill their
-/// playback buffer immediately instead of waiting for live data to trickle in
-/// at exactly playback speed.
+/// Fan-out bus backed by `tokio::sync::broadcast` with a rolling burst-on-connect
+/// buffer. New subscribers receive up to `burst_bytes_cap` bytes of recent
+/// stream data before transitioning to live so playback starts immediately
+/// instead of waiting for live data to trickle in at exactly playback speed.
+/// Matches Icecast's `burst-size` semantics.
 pub struct TokioBroadcastBus {
     sender: broadcast::Sender<Arc<StreamPacket>>,
-    /// Recent packets replayed to every new subscriber. Guarded by the same
-    /// lock used when creating a receiver so history and live stream are always
-    /// contiguous (no gap, no duplicate).
-    history: Mutex<VecDeque<Arc<StreamPacket>>>,
-    history_cap: usize,
+    /// Recent packets replayed to every new subscriber, byte-bounded. Guarded
+    /// by the same lock used when creating a receiver so history and live
+    /// stream are always contiguous (no gap, no duplicate).
+    history: Mutex<HistoryRing>,
+    burst_bytes_cap: usize,
 }
 
-/// Cap on packets delivered as initial history to a new subscriber. Sized to
-/// fill a typical HTTP player's pre-play buffer (~1 s at 128 kbps with 4 KB
-/// chunks) and no more — delivering the full ring at network speed makes some
-/// players (notably VLC) misbehave on the burst-then-live transition.
-const HISTORY_SNAPSHOT_PACKETS: usize = 4;
+/// History deque plus a running total of encoded bytes currently in the deque.
+/// Kept together under one lock so the total never diverges from the contents.
+struct HistoryRing {
+    packets: VecDeque<Arc<StreamPacket>>,
+    bytes: usize,
+}
+
+impl HistoryRing {
+    fn new() -> Self {
+        Self { packets: VecDeque::new(), bytes: 0 }
+    }
+}
 
 impl TokioBroadcastBus {
-    /// `capacity` is both the broadcast ring size and the history ring size.
-    /// Maps to `limits.ring_size` in config.
+    /// `ring_capacity` is the broadcast channel size (lag tolerance for live
+    /// subscribers, maps to `limits.ring_size`). `burst_bytes` is the
+    /// burst-on-connect cap in bytes (maps to the resolved per-mount
+    /// `burst_size`). Setting `burst_bytes = 0` disables burst.
     #[must_use]
-    pub fn new(capacity: usize) -> Self {
-        let (sender, _) = broadcast::channel(capacity);
+    pub fn new(ring_capacity: usize, burst_bytes: usize) -> Self {
+        let (sender, _) = broadcast::channel(ring_capacity);
         Self {
             sender,
-            history: Mutex::new(VecDeque::with_capacity(capacity)),
-            history_cap: capacity,
+            history: Mutex::new(HistoryRing::new()),
+            burst_bytes_cap: burst_bytes,
         }
     }
 }
@@ -47,10 +57,16 @@ impl BroadcastBus for TokioBroadcastBus {
         // observe a state where the packet is in neither history nor live stream.
         let mut hist = self.history.lock().unwrap();
         let _ = self.sender.send(Arc::clone(&packet));
-        if hist.len() >= self.history_cap {
-            hist.pop_front();
+        let added = packet_bytes(&packet);
+        hist.packets.push_back(packet);
+        hist.bytes += added;
+        // Evict oldest while we're over cap. The `len > 1` guard preserves a
+        // single oversized packet — Icecast semantics: send what we have.
+        while hist.bytes > self.burst_bytes_cap && hist.packets.len() > 1 {
+            if let Some(front) = hist.packets.pop_front() {
+                hist.bytes = hist.bytes.saturating_sub(packet_bytes(&front));
+            }
         }
-        hist.push_back(packet);
     }
 
     fn subscribe(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>> {
@@ -60,12 +76,32 @@ impl BroadcastBus for TokioBroadcastBus {
         // after is in the live stream.
         let hist = self.history.lock().unwrap();
         let receiver = self.sender.subscribe();
-        let skip = hist.len().saturating_sub(HISTORY_SNAPSHOT_PACKETS);
-        let history_snapshot: Vec<Arc<StreamPacket>> =
-            hist.iter().skip(skip).cloned().collect();
+        // burst_size = 0 means "no burst"; skip straight to live.
+        if self.burst_bytes_cap == 0 {
+            drop(hist);
+            return Box::pin(live_stream(receiver));
+        }
+        // Walk from the back accumulating bytes until we hit the cap. The
+        // !snapshot.is_empty() guard ensures we always deliver at least one
+        // packet even if it exceeds the cap (Icecast behavior — send what we
+        // have rather than starve the listener).
+        let mut snapshot: Vec<Arc<StreamPacket>> = Vec::new();
+        let mut acc: usize = 0;
+        for p in hist.packets.iter().rev() {
+            let sz = packet_bytes(p);
+            if acc + sz > self.burst_bytes_cap && !snapshot.is_empty() {
+                break;
+            }
+            acc += sz;
+            snapshot.push(Arc::clone(p));
+            if acc >= self.burst_bytes_cap {
+                break;
+            }
+        }
+        snapshot.reverse();
         drop(hist);
 
-        Box::pin(futures::stream::iter(history_snapshot).chain(live_stream(receiver)))
+        Box::pin(futures::stream::iter(snapshot).chain(live_stream(receiver)))
     }
 
     fn subscribe_live(&self) -> Pin<Box<dyn Stream<Item = Arc<StreamPacket>> + Send + 'static>> {
@@ -79,6 +115,16 @@ impl BroadcastBus for TokioBroadcastBus {
 
     fn subscriber_count(&self) -> usize {
         self.sender.receiver_count()
+    }
+}
+
+/// Byte size of a packet for burst accounting. Only encoded payloads contribute
+/// — decoded PCM is a hook for the future transcoding pipeline and isn't sent
+/// over the wire as-is.
+fn packet_bytes(p: &StreamPacket) -> usize {
+    match &p.payload {
+        AudioPayload::Encoded(e) => e.data.len(),
+        AudioPayload::Decoded(_) => 0,
     }
 }
 
@@ -105,11 +151,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    /// Default-sized packet for tests that don't care about exact byte counts.
     fn make_packet(seq: u64) -> Arc<StreamPacket> {
+        make_packet_sized(seq, 4)
+    }
+
+    fn make_packet_sized(seq: u64, size: usize) -> Arc<StreamPacket> {
         Arc::new(StreamPacket {
             payload: AudioPayload::Encoded(EncodedPacket {
                 codec: CodecId::MP3,
-                data: Bytes::from(vec![u8::try_from(seq % 256).unwrap_or(0); 4]),
+                data: Bytes::from(vec![u8::try_from(seq % 256).unwrap_or(0); size]),
             }),
             pts: Duration::from_millis(seq * 26),
             sequence: seq,
@@ -118,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscriber_receives_published_packet() {
-        let bus = TokioBroadcastBus::new(16);
+        let bus = TokioBroadcastBus::new(16, 65_536);
         let mut sub = bus.subscribe();
         bus.publish(make_packet(1));
         let received = tokio::time::timeout(Duration::from_millis(100), sub.next())
@@ -130,7 +181,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_subscribers_each_receive_packet() {
-        let bus = TokioBroadcastBus::new(16);
+        let bus = TokioBroadcastBus::new(16, 65_536);
         let mut sub_a = bus.subscribe();
         let mut sub_b = bus.subscribe();
         bus.publish(make_packet(42));
@@ -144,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscriber_count_tracks_live_subscriptions() {
-        let bus = TokioBroadcastBus::new(16);
+        let bus = TokioBroadcastBus::new(16, 65_536);
         assert_eq!(bus.subscriber_count(), 0);
         let sub1 = bus.subscribe();
         assert_eq!(bus.subscriber_count(), 1);
@@ -157,7 +208,7 @@ mod tests {
 
     #[tokio::test]
     async fn lagged_subscriber_skips_missed_packets_and_continues() {
-        let bus = TokioBroadcastBus::new(2);
+        let bus = TokioBroadcastBus::new(2, 65_536);
         let mut sub = bus.subscribe();
         // Flood the ring (capacity 2) — subscriber will lag.
         bus.publish(make_packet(1));
@@ -176,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn packet_arc_is_shared_not_copied() {
-        let bus = TokioBroadcastBus::new(16);
+        let bus = TokioBroadcastBus::new(16, 65_536);
         let mut sub = bus.subscribe();
         let original = make_packet(99);
         bus.publish(Arc::clone(&original));
@@ -187,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_subscriber_receives_history() {
-        let bus = TokioBroadcastBus::new(16);
+        let bus = TokioBroadcastBus::new(16, 65_536);
         bus.publish(make_packet(1));
         bus.publish(make_packet(2));
         bus.publish(make_packet(3));
@@ -206,7 +257,7 @@ mod tests {
         // Packets published before subscribe go into history; the one published
         // after goes into the live stream. Combined stream must yield all three
         // exactly once in order.
-        let bus = TokioBroadcastBus::new(16);
+        let bus = TokioBroadcastBus::new(16, 65_536);
         bus.publish(make_packet(1));
         bus.publish(make_packet(2));
         let mut sub = bus.subscribe();
@@ -220,10 +271,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn history_caps_at_capacity() {
-        let bus = TokioBroadcastBus::new(3);
+    async fn byte_cap_evicts_oldest() {
+        // 10-byte packets, 25-byte burst cap — only the suffix that fits should
+        // be retained and replayed.
+        let bus = TokioBroadcastBus::new(64, 25);
         for i in 1..=5 {
-            bus.publish(make_packet(i));
+            bus.publish(make_packet_sized(i, 10));
+        }
+        let mut sub = bus.subscribe();
+        let mut got: Vec<u64> = Vec::new();
+        while let Ok(Some(p)) = tokio::time::timeout(Duration::from_millis(50), sub.next()).await {
+            got.push(p.sequence);
+            if got.len() >= 3 { break; }
+        }
+        // 25 bytes / 10 bytes/packet = 2 full packets. With the back-walk
+        // including up to the cap boundary (>= cap stops loop), we keep the
+        // last 2 packets.
+        assert_eq!(got, vec![4, 5]);
+    }
+
+    #[tokio::test]
+    async fn burst_zero_returns_live_only() {
+        let bus = TokioBroadcastBus::new(16, 0);
+        bus.publish(make_packet(1));
+        bus.publish(make_packet(2));
+        let mut sub = bus.subscribe();
+        // No history should be replayed. Publish a live packet and assert
+        // we get only that one.
+        bus.publish(make_packet(3));
+        let p = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        assert_eq!(p.sequence, 3);
+        // Nothing else should be queued.
+        let nothing = tokio::time::timeout(Duration::from_millis(50), sub.next()).await;
+        assert!(nothing.is_err(), "expected no further packets; got {nothing:?}");
+    }
+
+    #[tokio::test]
+    async fn oversized_single_packet_replayed_whole() {
+        // Single packet exceeds the burst cap — Icecast behavior is to send
+        // what we have anyway rather than starving the new listener.
+        let bus = TokioBroadcastBus::new(16, 4);
+        bus.publish(make_packet_sized(1, 100));
+        let mut sub = bus.subscribe();
+        let p = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();
+        assert_eq!(p.sequence, 1);
+        match &p.payload {
+            AudioPayload::Encoded(e) => assert_eq!(e.data.len(), 100),
+            AudioPayload::Decoded(_) => panic!("expected Encoded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn history_caps_at_byte_capacity() {
+        // 4-byte packets, 12-byte burst cap = 3 packets retained.
+        let bus = TokioBroadcastBus::new(16, 12);
+        for i in 1..=5 {
+            bus.publish(make_packet_sized(i, 4));
         }
         let mut sub = bus.subscribe();
         let p1 = tokio::time::timeout(Duration::from_millis(100), sub.next()).await.unwrap().unwrap();

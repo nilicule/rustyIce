@@ -27,11 +27,12 @@ use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
 const FAKE_MP3_FRAME: &[u8] = &[0xFF, 0xFB, 0x90, 0x04, 0x00, 0x00, 0x00, 0x00];
 
 async fn build_test_server() -> (u16, u16, CancellationToken) {
-    build_test_server_with(None).await
+    build_test_server_with(None, None).await
 }
 
 async fn build_test_server_with(
     default_source_password: Option<&str>,
+    mount_burst_size: Option<u32>,
 ) -> (u16, u16, CancellationToken) {
     let cfg = Config {
         server: ServerConfig {
@@ -49,6 +50,7 @@ async fn build_test_server_with(
             ring_size: 64,
             slow_listener_grace_s: 2,
             source_max_kbps: None,
+            burst_size: 65_536,
         },
         mounts: vec![MountConfig {
             path: "/stream".to_string(),
@@ -58,6 +60,7 @@ async fn build_test_server_with(
             description: None,
             genre: None,
             url: None,
+            burst_size: mount_burst_size,
             transcode: None,
         }],
         tls: None,
@@ -65,7 +68,10 @@ async fn build_test_server_with(
     };
 
     let mounts = MountRegistry::new();
-    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    let bus = Arc::new(TokioBroadcastBus::new(
+        cfg.limits.ring_size,
+        cfg.effective_burst_size(&cfg.mounts[0]) as usize,
+    ));
     mounts.add(Arc::new(ActiveMount::new(
         MountInfo {
             path: "/stream".to_string(),
@@ -160,6 +166,7 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
             ring_size: 64,
             slow_listener_grace_s: 2,
             source_max_kbps: None,
+            burst_size: 65_536,
         },
         mounts: vec![MountConfig {
             path: "/stream".to_string(),
@@ -169,6 +176,7 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
             description: None,
             genre: None,
             url: None,
+            burst_size: None,
             transcode: None,
         }],
         tls: None,
@@ -176,7 +184,10 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
     };
 
     let mounts = MountRegistry::new();
-    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    let bus = Arc::new(TokioBroadcastBus::new(
+        cfg.limits.ring_size,
+        cfg.effective_burst_size(&cfg.mounts[0]) as usize,
+    ));
     mounts.add(Arc::new(ActiveMount::new(
         MountInfo {
             path: "/stream".to_string(),
@@ -339,6 +350,72 @@ async fn listener_receives_audio_from_source() {
 }
 
 #[tokio::test]
+async fn late_listener_receives_burst_on_connect() {
+    // Mount burst_size = 16 KB (4 ingest packets). Source pushes 32 KB then
+    // disconnects; the mount + bus + history outlive the disconnect because
+    // /stream is statically configured. A late listener should receive
+    // approximately burst_size bytes of historical audio immediately.
+    const BURST: u32 = 16_384;
+    let (stream_port, _admin_port, shutdown) =
+        build_test_server_with(None, Some(BURST)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let base_url = format!("http://127.0.0.1:{stream_port}");
+
+    // 1. Source pushes 32 KB and disconnects.
+    let source_url = format!("{base_url}/stream");
+    let audio: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(32 * 1024).collect();
+    let resp = reqwest::Client::new()
+        .put(&source_url)
+        .header("Authorization", "Basic dGVzdHBhc3M=") // base64("testpass")
+        .header("Content-Type", "audio/mpeg")
+        .body(audio)
+        .send()
+        .await
+        .expect("source PUT failed");
+    assert!(resp.status().is_success() || resp.status().as_u16() == 200);
+    // Let the ingest loop drain the last bytes into the bus history.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 2. Late listener connects — should immediately receive the burst.
+    let listener_url = format!("{base_url}/stream");
+    let mut response = tokio::time::timeout(
+        Duration::from_secs(2),
+        reqwest::Client::new().get(&listener_url).send(),
+    )
+    .await
+    .expect("listener GET timed out")
+    .expect("listener GET failed");
+    assert_eq!(response.status(), 200);
+
+    // 3. Drain bytes; with source disconnected the connection idles after
+    //    the burst is sent, so a short per-chunk timeout reliably ends the read.
+    let mut received: usize = 0;
+    while let Ok(Ok(Some(chunk))) =
+        tokio::time::timeout(Duration::from_millis(150), response.chunk()).await
+    {
+        received += chunk.len();
+        // Cap to avoid runaway if some live data ever sneaks in.
+        if received >= (BURST as usize) * 2 { break; }
+    }
+
+    // Expect roughly BURST bytes, with one chunk of slack on either side.
+    // Without burst-on-connect we'd receive 0 bytes (source disconnected).
+    let burst = BURST as usize;
+    let chunk_size = 4096; // IcecastIngest::default() chunk_size
+    assert!(
+        received >= burst - chunk_size,
+        "expected ~{burst} burst bytes, got {received}",
+    );
+    assert!(
+        received <= burst + chunk_size,
+        "expected at most {burst} + 1 packet, got {received}",
+    );
+
+    shutdown.cancel();
+}
+
+#[tokio::test]
 async fn admin_api_shows_mount() {
     let (_stream_port, admin_port, shutdown) = build_test_server().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -375,7 +452,7 @@ async fn source_with_wrong_password_gets_401() {
 async fn dynamic_mount_created_when_default_source_password_matches() {
     // Server allows any source authenticating with "globalpw" to create new
     // mounts that aren't pre-configured.
-    let (stream_port, _admin_port, shutdown) = build_test_server_with(Some("globalpw")).await;
+    let (stream_port, _admin_port, shutdown) = build_test_server_with(Some("globalpw"), None).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let base = format!("http://127.0.0.1:{stream_port}");
@@ -519,6 +596,7 @@ async fn build_test_server_with_transcode_cfg(
             ring_size: 64,
             slow_listener_grace_s: 2,
             source_max_kbps: None,
+            burst_size: 65_536,
         },
         mounts: vec![MountConfig {
             path: "/stream".to_string(),
@@ -528,6 +606,7 @@ async fn build_test_server_with_transcode_cfg(
             description: None,
             genre: None,
             url: None,
+            burst_size: None,
             transcode: Some(transcode),
         }],
         tls: None,
@@ -536,7 +615,10 @@ async fn build_test_server_with_transcode_cfg(
 
     // Build the same way as build_test_server but with transcode config
     let mounts = MountRegistry::new();
-    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    let bus = Arc::new(TokioBroadcastBus::new(
+        cfg.limits.ring_size,
+        cfg.effective_burst_size(&cfg.mounts[0]) as usize,
+    ));
     mounts.add(Arc::new(ActiveMount::new(
         MountInfo {
             path: "/stream".to_string(),
@@ -1070,6 +1152,7 @@ async fn transcoding_overrides_source_bitrate_and_audio_info() {
             ring_size: 64,
             slow_listener_grace_s: 2,
             source_max_kbps: None,
+            burst_size: 65_536,
         },
         mounts: vec![MountConfig {
             path: "/stream".to_string(),
@@ -1079,6 +1162,7 @@ async fn transcoding_overrides_source_bitrate_and_audio_info() {
             description: None,
             genre: None,
             url: None,
+            burst_size: None,
             transcode: Some(TranscodeConfig {
                 format: TranscodeFormat::Mp3,
                 sample_rate: 22050,
@@ -1090,7 +1174,10 @@ async fn transcoding_overrides_source_bitrate_and_audio_info() {
     };
 
     let mounts = MountRegistry::new();
-    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    let bus = Arc::new(TokioBroadcastBus::new(
+        cfg.limits.ring_size,
+        cfg.effective_burst_size(&cfg.mounts[0]) as usize,
+    ));
     mounts.add(Arc::new(ActiveMount::new(
         MountInfo {
             path: "/stream".to_string(),

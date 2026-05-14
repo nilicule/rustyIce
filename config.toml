@@ -19,7 +19,7 @@ username        = "admin"
 password_bcrypt = "$2y$12$tWRporih5P9huFKMLo7ozO.9WvKgTRlQBFRlF8Y4AsGglyRY7qvr."
 
 [transcode]
-format       = "vorbis"        # "mp3" or "vorbis"
+format       = "mp3"        # "mp3" or "vorbis"
 sample_rate  = 44100
 bitrate_kbps = 128
 
@@ -27,6 +27,10 @@ bitrate_kbps = 128
 max_listeners_global  = 500
 ring_size             = 64
 slow_listener_grace_s = 2
+# Burst-on-connect: bytes of recent audio sent to each new listener so players
+# can start playback immediately instead of waiting for live data. Set to 0
+# to disable. Per-mount override available as [[mounts]] burst_size.
+burst_size            = 65536
 # Uncomment to cap source ingest rate. Useful when pushing files with curl so
 # the connection stays open at real-time bitrate instead of uploading instantly.
 # source_max_kbps = 128

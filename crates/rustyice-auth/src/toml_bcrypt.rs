@@ -112,6 +112,7 @@ mod tests {
                 ring_size: 64,
                 slow_listener_grace_s: 2,
                 source_max_kbps: None,
+                burst_size: 65_536,
             },
             mounts: mounts
                 .iter()
@@ -123,6 +124,7 @@ mod tests {
                     description: None,
                     genre: None,
                     url: None,
+                    burst_size: None,
                     transcode: None,
                 })
                 .collect(),

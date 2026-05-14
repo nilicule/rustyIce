@@ -21,6 +21,17 @@ impl Config {
     pub fn effective_transcode<'a>(&'a self, mount: &'a MountConfig) -> Option<&'a TranscodeConfig> {
         mount.transcode.as_ref().or(self.transcode.as_ref())
     }
+
+    /// Returns the effective burst-on-connect size in bytes for `mount`:
+    /// per-mount takes precedence over the global default in `[limits]`.
+    #[must_use]
+    pub fn effective_burst_size(&self, mount: &MountConfig) -> u32 {
+        mount.burst_size.unwrap_or(self.limits.burst_size)
+    }
+}
+
+fn default_burst_size() -> u32 {
+    65_536
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -72,6 +83,12 @@ pub struct LimitsConfig {
     /// their own bitrate and are unaffected as long as they stay below the cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_max_kbps: Option<u32>,
+    /// Per-listener burst-on-connect size in bytes. New listeners receive up
+    /// to this many recent stream bytes before transitioning to live data,
+    /// letting players start playback immediately. Icecast-compatible
+    /// (default 65536). Set to 0 to disable.
+    #[serde(default = "default_burst_size")]
+    pub burst_size: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,6 +107,9 @@ pub struct MountConfig {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcode: Option<TranscodeConfig>,
+    /// Per-mount override of [`LimitsConfig::burst_size`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst_size: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -359,6 +379,43 @@ bitrate_kbps = 96
         let tc = cfg.transcode.as_ref().unwrap();
         assert_eq!(tc.format, TranscodeFormat::Vorbis);
         assert_eq!(tc.bitrate_kbps, 96);
+    }
+
+    #[test]
+    fn burst_size_defaults_to_65536_when_absent() {
+        let cfg: Config = toml::from_str(MINIMAL_CONFIG).unwrap();
+        assert_eq!(cfg.limits.burst_size, 65_536);
+    }
+
+    #[test]
+    fn burst_size_per_mount_overrides_global() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[mounts]]
+path            = "/stream"
+source_password = "secret"
+burst_size      = 131072
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        // Global default kicks in from serde default:
+        assert_eq!(cfg.limits.burst_size, 65_536);
+        // Per-mount override wins:
+        assert_eq!(cfg.effective_burst_size(&cfg.mounts[0]), 131_072);
+    }
+
+    #[test]
+    fn burst_size_falls_back_to_global() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[mounts]]
+path            = "/stream"
+source_password = "secret"
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        assert!(cfg.mounts[0].burst_size.is_none());
+        assert_eq!(cfg.effective_burst_size(&cfg.mounts[0]), 65_536);
     }
 
     #[test]

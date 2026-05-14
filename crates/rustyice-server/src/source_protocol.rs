@@ -323,7 +323,10 @@ fn create_dynamic_mount(
     config: &arc_swap::ArcSwap<rustyice_core::config::Config>,
 ) -> Arc<ActiveMount> {
     let cfg = config.load();
-    let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+    let bus = Arc::new(TokioBroadcastBus::new(
+        cfg.limits.ring_size,
+        cfg.limits.burst_size as usize,
+    ));
     let info = MountInfo {
         path: mount_path.to_string(),
         codec,

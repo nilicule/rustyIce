@@ -57,7 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Mount registry ──────────────────────────────────────────────────────
     let mounts = MountRegistry::new();
     for mc in &cfg.mounts {
-        let bus = Arc::new(TokioBroadcastBus::new(cfg.limits.ring_size));
+        let bus = Arc::new(TokioBroadcastBus::new(
+            cfg.limits.ring_size,
+            cfg.effective_burst_size(mc) as usize,
+        ));
         mounts.add(Arc::new(ActiveMount::new(
             MountInfo {
                 path: mc.path.clone(),
