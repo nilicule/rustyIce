@@ -15,16 +15,22 @@ A single-binary Icecast-compatible MP3 streaming server written in Rust.
 
 ## Quickstart
 
-**Prerequisites:** Rust 1.85+ (2024 edition), Cargo. For transcoding: a C toolchain and `libmp3lame` (`brew install lame` / `apt install libmp3lame-dev`).
+### Install
+
+Download the latest prebuilt binary for your OS/arch:
 
 ```sh
-# Clone and build
-git clone <repo>
-cd rustyIce
-cargo build --release
+curl -LJO "https://github.com/nilicule/rustyice/releases/latest/download/rustyice-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')"
+chmod +x rustyice-*
+```
 
-# The binary is at:
-./target/release/rustyice
+Or build from source — **prerequisites:** Rust 1.85+ (2024 edition), Cargo. For transcoding: a C toolchain and `libmp3lame` (`brew install lame` / `apt install libmp3lame-dev`).
+
+```sh
+git clone https://github.com/nilicule/rustyice.git
+cd rustyice
+cargo build --release
+# The binary is at ./target/release/rustyice
 ```
 
 ### Run
