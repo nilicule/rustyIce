@@ -13,15 +13,15 @@ use rustyice_core::{
 use rustyice_ingest::IcecastIngest;
 use rustyice_output::HttpPassthroughOutput;
 use rustyice_server::{
-    bus::TokioBroadcastBus, source_layer::SourceMethodLayer, state::AppState,
+    bus::TokioBroadcastBus,
+    state::AppState,
+    stream_listener::{PeerAddr, StreamListener},
     stream_router::build_stream_router,
 };
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tower::ServiceBuilder;
 use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
 
 const FAKE_MP3_FRAME: &[u8] = &[0xFF, 0xFB, 0x90, 0x04, 0x00, 0x00, 0x00, 0x00];
@@ -120,15 +120,15 @@ async fn build_test_server_with(
     let stream_port = stream_listener.local_addr().unwrap().port();
     let admin_port = admin_listener.local_addr().unwrap().port();
 
-    let stream_router = build_stream_router(app_state)
-        .layer(ServiceBuilder::new().layer(SourceMethodLayer));
+    let stream_router = build_stream_router(app_state.clone());
     let admin_router = build_admin_router(admin_state);
 
     let stream_sd = shutdown.clone();
+    let dispatcher = StreamListener::new(stream_listener, app_state);
     tokio::spawn(async move {
         axum::serve(
-            stream_listener,
-            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+            dispatcher,
+            stream_router.into_make_service_with_connect_info::<PeerAddr>(),
         )
         .with_graceful_shutdown(async move { stream_sd.cancelled().await })
         .await
@@ -233,15 +233,15 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
     let stream_port = stream_listener.local_addr().unwrap().port();
     let admin_port = admin_listener.local_addr().unwrap().port();
 
-    let stream_router = build_stream_router(app_state)
-        .layer(ServiceBuilder::new().layer(SourceMethodLayer));
+    let stream_router = build_stream_router(app_state.clone());
     let admin_router = build_admin_router(admin_state);
 
     let stream_sd = shutdown.clone();
+    let dispatcher = StreamListener::new(stream_listener, app_state);
     tokio::spawn(async move {
         axum::serve(
-            stream_listener,
-            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+            dispatcher,
+            stream_router.into_make_service_with_connect_info::<PeerAddr>(),
         )
         .with_graceful_shutdown(async move { stream_sd.cancelled().await })
         .await
@@ -575,15 +575,15 @@ async fn build_test_server_with_transcode(bitrate_kbps: u32) -> (u16, u16, Cance
     let stream_port = stream_listener.local_addr().unwrap().port();
     let admin_port = admin_listener.local_addr().unwrap().port();
 
-    let stream_router = build_stream_router(app_state)
-        .layer(ServiceBuilder::new().layer(SourceMethodLayer));
+    let stream_router = build_stream_router(app_state.clone());
     let admin_router = build_admin_router(admin_state);
 
     let stream_sd = shutdown.clone();
+    let dispatcher = StreamListener::new(stream_listener, app_state);
     tokio::spawn(async move {
         axum::serve(
-            stream_listener,
-            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+            dispatcher,
+            stream_router.into_make_service_with_connect_info::<PeerAddr>(),
         )
         .with_graceful_shutdown(async move { stream_sd.cancelled().await })
         .await
@@ -1107,13 +1107,13 @@ async fn transcoding_overrides_source_bitrate_and_audio_info() {
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let stream_port = stream_listener.local_addr().unwrap().port();
-    let stream_router = build_stream_router(app_state)
-        .layer(ServiceBuilder::new().layer(SourceMethodLayer));
+    let stream_router = build_stream_router(app_state.clone());
     let stream_sd = shutdown.clone();
+    let dispatcher = StreamListener::new(stream_listener, app_state);
     tokio::spawn(async move {
         axum::serve(
-            stream_listener,
-            stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+            dispatcher,
+            stream_router.into_make_service_with_connect_info::<PeerAddr>(),
         )
         .with_graceful_shutdown(async move { stream_sd.cancelled().await })
         .await
@@ -1161,5 +1161,82 @@ async fn transcoding_overrides_source_bitrate_and_audio_info() {
     drop(resp);
     drop(body_tx);
     let _ = source_handle.await;
+    shutdown.cancel();
+}
+
+/// butt and other Icecast-2 source clients send:
+///   - `PUT /mount HTTP/1.1`
+///   - `Expect: 100-continue`
+///   - no `Content-Length` and no `Transfer-Encoding`
+///   - then wait for `HTTP/1.1 100 Continue` before streaming audio
+/// On disconnect, they expect `HTTP/1.1 200 OK`.
+///
+/// This violates strict HTTP/1.1 body framing rules (a request with no length
+/// hint is treated as a 0-byte body by RFC-compliant parsers like hyper), so
+/// the source port has to speak the Icecast protocol directly rather than
+/// going through axum/hyper.
+#[tokio::test]
+async fn butt_style_source_streams_audio_to_listener() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let (stream_port, _admin_port, shutdown) = build_test_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Connect listener first so it's subscribed before any audio arrives.
+    let base_url = format!("http://127.0.0.1:{stream_port}");
+    let listener_url = format!("{base_url}/stream");
+    let mut listener_resp = tokio::time::timeout(
+        Duration::from_secs(2),
+        reqwest::Client::new().get(&listener_url).send(),
+    )
+    .await
+    .expect("listener GET timed out")
+    .expect("listener GET failed");
+    assert_eq!(listener_resp.status(), 200);
+
+    // Open raw TCP to the source port, send butt's exact protocol shape.
+    let mut sock = TcpStream::connect(("127.0.0.1", stream_port)).await.unwrap();
+    // base64("source:testpass") -> "c291cmNlOnRlc3RwYXNz"
+    let request = b"PUT /stream HTTP/1.1\r\n\
+                    Authorization: Basic c291cmNlOnRlc3RwYXNz\r\n\
+                    Host: localhost\r\n\
+                    User-Agent: fake-butt\r\n\
+                    Content-Type: audio/mpeg\r\n\
+                    ice-name: raw-test\r\n\
+                    Expect: 100-continue\r\n\
+                    \r\n";
+    sock.write_all(request).await.unwrap();
+    sock.flush().await.unwrap();
+
+    // Expect a 100 Continue (interim) response before we stream the body.
+    let mut interim = [0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(2), sock.read(&mut interim))
+        .await
+        .expect("server never responded with 100 Continue")
+        .expect("read failed");
+    let interim_str = std::str::from_utf8(&interim[..n]).unwrap_or("");
+    assert!(
+        interim_str.contains("100"),
+        "expected 100 Continue, got: {interim_str:?}"
+    );
+
+    // Now stream audio (MP3 sync-word framed) and verify listener receives bytes.
+    let audio: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(8192).collect();
+    sock.write_all(&audio).await.unwrap();
+    sock.flush().await.unwrap();
+
+    let first_chunk = tokio::time::timeout(Duration::from_secs(2), listener_resp.chunk())
+        .await
+        .expect("listener never received audio")
+        .expect("listener body error");
+    assert!(
+        first_chunk.is_some_and(|b| !b.is_empty()),
+        "listener should have received audio bytes from butt-style source"
+    );
+
+    // Close source — server should respond with 200 OK before closing.
+    drop(sock);
+    drop(listener_resp);
     shutdown.cancel();
 }

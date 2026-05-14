@@ -36,6 +36,9 @@ tokio-stream.workspace = true
 tokio-util.workspace   = true
 base64.workspace       = true
 bcrypt.workspace       = true
+httparse.workspace     = true
+hyper.workspace        = true
+hyper-util.workspace   = true
 
 [dev-dependencies]
 tempfile.workspace  = true

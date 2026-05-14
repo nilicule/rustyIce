@@ -4,8 +4,8 @@ use rustyice_server::{
     bus::TokioBroadcastBus,
     config_reload::watch_sighup,
     shutdown::shutdown_signal,
-    source_layer::SourceMethodLayer,
     state::AppState,
+    stream_listener::{PeerAddr, StreamListener},
     stream_router::build_stream_router,
 };
 
@@ -19,10 +19,9 @@ use rustyice_core::{
 };
 use rustyice_ingest::IcecastIngest;
 use rustyice_output::HttpPassthroughOutput;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tower::ServiceBuilder;
 use tracing::info;
 
 const DEFAULT_CONFIG_TOML: &str = include_str!("default_config.toml");
@@ -110,8 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(addr = %cfg.server.admin_bind, "admin port bound");
 
     // ── Build routers ───────────────────────────────────────────────────────
-    let stream_router = build_stream_router(app_state.clone())
-        .layer(ServiceBuilder::new().layer(SourceMethodLayer));
+    let stream_router = build_stream_router(app_state.clone());
 
     let admin_state = app_state.admin_state(prom_handle);
     let admin_router = build_admin_router(admin_state);
@@ -140,13 +138,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── Run stream server (blocks until shutdown) ───────────────────────────
-    // `into_make_service_with_connect_info::<SocketAddr>()` exposes each
-    // listener's peer address to handlers via `ConnectInfo<SocketAddr>`, used
-    // by the admin "listeners" view to show the client address.
+    // `StreamListener` intercepts Icecast SOURCE-protocol uploads (PUT/SOURCE
+    // with `Expect: 100-continue` and no body framing) and routes them through
+    // `source_protocol`, which speaks the protocol directly on the TCP socket.
+    // Listener GETs and everything else flow through axum/hyper as usual.
+    //
+    // `into_make_service_with_connect_info::<PeerAddr>()` exposes each
+    // listener's peer address to handlers via `ConnectInfo<PeerAddr>` —
+    // a local newtype required by the orphan rule for our custom listener.
+    // Used by the admin "listeners" view to show the client address.
     let stream_shutdown = shutdown.clone();
+    let dispatcher = StreamListener::new(stream_listener, app_state);
     axum::serve(
-        stream_listener,
-        stream_router.into_make_service_with_connect_info::<SocketAddr>(),
+        dispatcher,
+        stream_router.into_make_service_with_connect_info::<PeerAddr>(),
     )
     .with_graceful_shutdown(async move {
         shutdown_signal(stream_shutdown.clone()).await;
