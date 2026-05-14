@@ -1,3 +1,4 @@
+use crate::config::TranscodeConfig;
 use crate::traits::BroadcastBus;
 use crate::types::CodecId;
 use arc_swap::ArcSwap;
@@ -22,6 +23,21 @@ pub struct MountMetadata {
 /// on source disconnect.
 #[derive(Debug, Clone, Default)]
 pub struct SourceOverlay {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub genre: Option<String>,
+    pub url: Option<String>,
+    pub public: Option<bool>,
+    pub audio_info: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+}
+
+/// Effective merged station identity used for outbound listener response
+/// headers, the ICY metaint block, and admin API JSON. Built by
+/// `ActiveMount::effective_identity` from `info.metadata` + `source_overlay`,
+/// with transcode-target precedence for `bitrate_kbps` / `audio_info`.
+#[derive(Debug, Clone, Default)]
+pub struct EffectiveIdentity {
     pub name: Option<String>,
     pub description: Option<String>,
     pub genre: Option<String>,
@@ -105,6 +121,59 @@ impl ActiveMount {
             .ok()?
             .as_ref()
             .map(Instant::elapsed)
+    }
+
+    /// Merge `info.metadata` (config) and `source_overlay` (live) into the
+    /// effective view shown to listeners and operators.
+    ///
+    /// String fields: overlay wins per-field, config fills the rest.
+    /// `public`: overlay only — no config equivalent.
+    /// `bitrate_kbps` / `audio_info`: when `transcode` is `Some`, the transcode
+    /// target wins (we know what we're actually emitting); otherwise the
+    /// overlay value is used; otherwise the field is `None`.
+    #[must_use]
+    pub fn effective_identity(&self, transcode: Option<&TranscodeConfig>) -> EffectiveIdentity {
+        let info = self.info.load();
+        let overlay_snap = self.source_overlay.load_full();
+        let overlay = overlay_snap.as_ref().as_ref();
+
+        let name = overlay
+            .and_then(|o| o.name.clone())
+            .or_else(|| info.metadata.name.clone());
+        let description = overlay
+            .and_then(|o| o.description.clone())
+            .or_else(|| info.metadata.description.clone());
+        let genre = overlay
+            .and_then(|o| o.genre.clone())
+            .or_else(|| info.metadata.genre.clone());
+        let url = overlay
+            .and_then(|o| o.url.clone())
+            .or_else(|| info.metadata.url.clone());
+        let public = overlay.and_then(|o| o.public);
+
+        let (bitrate_kbps, audio_info) = match transcode {
+            Some(tc) => (
+                Some(tc.bitrate_kbps),
+                Some(format!(
+                    "samplerate={};channels=2;bitrate={}",
+                    tc.sample_rate, tc.bitrate_kbps
+                )),
+            ),
+            None => (
+                overlay.and_then(|o| o.bitrate_kbps),
+                overlay.and_then(|o| o.audio_info.clone()),
+            ),
+        };
+
+        EffectiveIdentity {
+            name,
+            description,
+            genre,
+            url,
+            public,
+            audio_info,
+            bitrate_kbps,
+        }
     }
 }
 
@@ -328,5 +397,105 @@ mod tests {
         mount.info.store(Arc::new(new_info));
         let snap = mount.source_overlay.load_full();
         assert_eq!(snap.as_ref().as_ref().unwrap().name.as_deref(), Some("persisting"));
+    }
+
+    use crate::config::{TranscodeConfig, TranscodeFormat};
+
+    fn mount_with_metadata(meta: MountMetadata) -> ActiveMount {
+        let info = MountInfo {
+            path: "/stream".to_string(),
+            codec: CodecId::MP3,
+            source_password: "x".to_string(),
+            max_listeners: None,
+            metadata: meta,
+        };
+        ActiveMount::new(info, Arc::new(MockBus))
+    }
+
+    #[test]
+    fn effective_identity_uses_config_when_overlay_absent() {
+        let mount = mount_with_metadata(MountMetadata {
+            name: Some("Config Name".to_string()),
+            description: Some("Config Desc".to_string()),
+            genre: Some("Jazz".to_string()),
+            url: Some("https://cfg".to_string()),
+        });
+        let id = mount.effective_identity(None);
+        assert_eq!(id.name.as_deref(), Some("Config Name"));
+        assert_eq!(id.description.as_deref(), Some("Config Desc"));
+        assert_eq!(id.genre.as_deref(), Some("Jazz"));
+        assert_eq!(id.url.as_deref(), Some("https://cfg"));
+        assert!(id.public.is_none());
+        assert!(id.audio_info.is_none());
+        assert!(id.bitrate_kbps.is_none());
+    }
+
+    #[test]
+    fn effective_identity_overlay_wins_per_field() {
+        let mount = mount_with_metadata(MountMetadata {
+            name: Some("Config Name".to_string()),
+            description: Some("Config Desc".to_string()),
+            genre: Some("Jazz".to_string()),
+            url: Some("https://cfg".to_string()),
+        });
+        mount.source_overlay.store(Arc::new(Some(SourceOverlay {
+            name: Some("Source Name".to_string()),
+            genre: Some("Rock".to_string()),
+            public: Some(true),
+            bitrate_kbps: Some(128),
+            ..Default::default()
+        })));
+        let id = mount.effective_identity(None);
+        // Overlay wins where set:
+        assert_eq!(id.name.as_deref(), Some("Source Name"));
+        assert_eq!(id.genre.as_deref(), Some("Rock"));
+        assert_eq!(id.public, Some(true));
+        assert_eq!(id.bitrate_kbps, Some(128));
+        // Falls back to config where overlay didn't set:
+        assert_eq!(id.description.as_deref(), Some("Config Desc"));
+        assert_eq!(id.url.as_deref(), Some("https://cfg"));
+    }
+
+    #[test]
+    fn effective_identity_transcode_overrides_bitrate_and_audio_info() {
+        let mount = mount_with_metadata(MountMetadata::default());
+        mount.source_overlay.store(Arc::new(Some(SourceOverlay {
+            bitrate_kbps: Some(320),
+            audio_info: Some("samplerate=48000;channels=2".to_string()),
+            ..Default::default()
+        })));
+        let tc = TranscodeConfig {
+            format: TranscodeFormat::Mp3,
+            sample_rate: 44100,
+            bitrate_kbps: 128,
+        };
+        let id = mount.effective_identity(Some(&tc));
+        assert_eq!(id.bitrate_kbps, Some(128));
+        assert_eq!(
+            id.audio_info.as_deref(),
+            Some("samplerate=44100;channels=2;bitrate=128"),
+        );
+    }
+
+    #[test]
+    fn effective_identity_passthrough_uses_overlay_bitrate_and_audio_info() {
+        let mount = mount_with_metadata(MountMetadata::default());
+        mount.source_overlay.store(Arc::new(Some(SourceOverlay {
+            bitrate_kbps: Some(192),
+            audio_info: Some("samplerate=44100".to_string()),
+            ..Default::default()
+        })));
+        let id = mount.effective_identity(None);
+        assert_eq!(id.bitrate_kbps, Some(192));
+        assert_eq!(id.audio_info.as_deref(), Some("samplerate=44100"));
+    }
+
+    #[test]
+    fn effective_identity_passthrough_omits_bitrate_when_source_silent() {
+        let mount = mount_with_metadata(MountMetadata::default());
+        // No overlay set at all — pure passthrough, no source headers.
+        let id = mount.effective_identity(None);
+        assert!(id.bitrate_kbps.is_none());
+        assert!(id.audio_info.is_none());
     }
 }
