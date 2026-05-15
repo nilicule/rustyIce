@@ -11,6 +11,8 @@ pub struct Config {
     pub mounts: Vec<MountConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub autodjs: Vec<AutoDjConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relays: Vec<RelayConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,6 +48,26 @@ impl Config {
         for a in &self.autodjs {
             if !seen.insert(&a.mount) {
                 return Err(format!("duplicate autodj mount path: {}", a.mount));
+            }
+        }
+        for r in &self.relays {
+            if !seen.insert(&r.mount) {
+                return Err(format!("duplicate relay mount path: {}", r.mount));
+            }
+            if !(r.upstream.starts_with("http://") || r.upstream.starts_with("https://")) {
+                return Err(format!(
+                    "relay '{}' upstream must be an http:// or https:// URL, got '{}'",
+                    r.mount, r.upstream,
+                ));
+            }
+            match (&r.username, &r.password) {
+                (Some(_), None) => {
+                    return Err(format!("relay '{}' has username but no password", r.mount));
+                }
+                (None, Some(_)) => {
+                    return Err(format!("relay '{}' has password but no username", r.mount));
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -186,6 +208,32 @@ pub struct AutoDjConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst_size: Option<u32>,
     pub transcode: TranscodeConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RelayConfig {
+    pub mount: String,
+    pub upstream: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_listeners: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcode: Option<TranscodeConfig>,
 }
 
 /// Reserved for v2 ACME / Let's Encrypt support. Parsed but unused in v1.
@@ -615,5 +663,101 @@ bitrate_kbps = 128
         );
         let cfg: Config = toml::from_str(&src).unwrap();
         cfg.validate_paths().unwrap();
+    }
+
+    #[test]
+    fn parses_relay_entry() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[relays]]
+mount        = "/relay"
+upstream     = "http://upstream.example.com:8000/jazz"
+name         = "Jazz Relay"
+username     = "relay"
+password     = "secret"
+
+[relays.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        assert_eq!(cfg.relays.len(), 1);
+        let r = &cfg.relays[0];
+        assert_eq!(r.mount, "/relay");
+        assert_eq!(r.upstream, "http://upstream.example.com:8000/jazz");
+        assert_eq!(r.name.as_deref(), Some("Jazz Relay"));
+        assert_eq!(r.username.as_deref(), Some("relay"));
+        assert_eq!(r.password.as_deref(), Some("secret"));
+        assert!(r.enabled);
+        assert_eq!(r.transcode.as_ref().unwrap().bitrate_kbps, 128);
+    }
+
+    #[test]
+    fn relay_with_no_transcode_parses_ok() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[relays]]
+mount    = "/relay"
+upstream = "http://upstream.example.com/stream"
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        assert!(cfg.relays[0].transcode.is_none());
+        assert!(cfg.relays[0].enabled);
+        assert!(cfg.relays[0].username.is_none());
+        assert!(cfg.relays[0].password.is_none());
+    }
+
+    #[test]
+    fn relay_mount_path_collision_with_autodj_is_detected() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[autodjs]]
+mount  = "/dup"
+folder = "/tmp"
+[autodjs.transcode]
+format = "mp3"
+sample_rate = 44100
+bitrate_kbps = 128
+
+[[relays]]
+mount    = "/dup"
+upstream = "http://example.com/x"
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let err = cfg.validate_paths().unwrap_err();
+        assert!(err.contains("/dup"));
+    }
+
+    #[test]
+    fn relay_partial_credentials_are_rejected() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[relays]]
+mount    = "/r"
+upstream = "http://example.com/x"
+username = "user"
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let err = cfg.validate_paths().unwrap_err();
+        assert!(err.to_lowercase().contains("username"));
+    }
+
+    #[test]
+    fn relay_with_non_http_upstream_is_rejected() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[relays]]
+mount    = "/r"
+upstream = "ftp://example.com/x"
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let err = cfg.validate_paths().unwrap_err();
+        assert!(err.to_lowercase().contains("upstream"));
     }
 }
