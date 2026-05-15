@@ -12,6 +12,7 @@ A single-binary Icecast-compatible streaming server written in Rust, supporting 
 | **Streaming**   | HTTP output with burst-on-connect prefill, ICY metadata, Vorbis header priming for mid-stream joiners |
 | **Transcoding** | Decode/re-encode between MP3 and Ogg Vorbis, per-mount or global, passthrough when unset |
 | **AutoDJ**      | Auto-rotate a folder of MP3 / Ogg Vorbis on a mount, shuffle or sequential, tag-derived ICY titles, live-source preemption |
+| **Relay**       | Pull from an upstream Icecast-compatible URL on a mount; optional Basic auth, optional transcode, exponential-backoff reconnect, live-source preemption |
 | **Auth**        | Per-mount source passwords + optional global password for dynamic mounts; bcrypt-hashed admin users |
 | **Admin**       | Web dashboard + REST API (kick-source / kick-listener, listener detail) and Prometheus `/metrics` |
 | **Ops**         | Single static binary (async Tokio); `SIGHUP` hot-reload with no listener drops; optional config file with random-credential fallback |
@@ -214,6 +215,30 @@ bitrate_kbps = 128
 The transcode block is required: all files are decoded and re-encoded to a uniform output so listeners get a clean continuous stream regardless of per-file codec, sample rate, or bitrate differences. Per-track ICY title is derived from each file's tags (`artist - title`, or `title` alone, or the filename stem when the file is untagged). MP3 and Ogg Vorbis input files are supported; other extensions in the folder are skipped with a warning.
 
 When `loop = false`, the AutoDJ disconnects after the playlist exhausts (listeners drop). When `loop = true`, the folder is rescanned and re-shuffled at the end of each pass, so files added between passes are picked up automatically. SIGHUP picks up additions, removals, and field changes; metadata-only changes apply without restarting the stream.
+
+### Relay — re-broadcast an upstream stream
+
+Pull from a remote Icecast-compatible URL and re-broadcast on a local mount. Each `[[relays]]` entry registers its own mount; live Icecast sources that connect to the same path preempt the relay for the duration of the broadcast, then the relay reconnects.
+
+```toml
+[[relays]]
+mount         = "/relay-jazz"
+upstream      = "http://upstream.example.com:8000/jazz"
+name          = "Jazz Relay"
+genre         = "Jazz"
+enabled       = true
+# username    = "relay"           # optional HTTP Basic
+# password    = "secret"
+
+# Optional: re-encode the upstream into a uniform output. Falls back to the
+# global [transcode] block when unset. Passthrough when neither is set.
+[relays.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+```
+
+Connection failures (DNS, TCP, TLS, non-2xx, or mid-stream errors) trigger an exponential backoff and retry forever: 1 s, 2 s, 4 s, …, capped at 30 s. The backoff resets on a successful connect. Admin kick-source on a relay mount drops the upstream connection and immediately reconnects — useful for forcing a fresh handshake without restarting the server.
 
 ## Load testing
 

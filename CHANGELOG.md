@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - Unreleased
 
+### Added
+
+#### Relay
+- New `[[relays]]` config block — each entry pulls from a remote Icecast-compatible URL and re-broadcasts on a local mount. Optional HTTP Basic auth, optional per-relay `[relays.transcode]` (falls back to global `[transcode]`, passthrough when unset).
+- Reconnect-on-failure with exponential backoff (1 s → 30 s cap). Resets on successful connect.
+- Live Icecast sources connecting to a relay-owned mount preempt the relay until they disconnect, then the relay reconnects automatically. `/api/mounts` exposes `source_kind = "relay"` to disambiguate from live and AutoDJ sources.
+
 ### Fixed
 
 - Suppress `symphonia_metadata` INFO noise from the default logger so AutoDJ folders with tagged audio no longer flood the console with `unsupported frame GEOB` (and similar) lines. 
