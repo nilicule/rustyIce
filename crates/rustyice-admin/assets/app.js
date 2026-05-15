@@ -279,11 +279,10 @@ async function refreshLanding() {
       list.innerHTML = '<div class="streams-empty">— no active streams —</div>';
       return;
     }
-    const streamBase = `${location.protocol}//${location.hostname}:${stats.stream_port}`;
     list.innerHTML = live.map((m) => {
-      const href = `${streamBase}${m.path}`;
+      const href = `#stream/${encodeURIComponent(m.path)}`;
       return `
-        <a class="stream-row" href="${escapeHtml(href)}" target="_blank" rel="noopener">
+        <a class="stream-row" href="${href}">
           <div class="stream-meta">
             <span class="stream-path">${escapeHtml(m.path)}</span>
             ${m.name ? `<span class="stream-name">${escapeHtml(m.name)}</span>` : ''}
