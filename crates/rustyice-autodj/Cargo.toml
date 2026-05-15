@@ -3,6 +3,12 @@ name = "rustyice-autodj"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Enables generation of in-memory MP3 + Ogg Vorbis fixtures with tags, for use
+# in tests across this and downstream crates. Off by default — pulls in
+# encoders + an ID3 writer that aren't needed at runtime.
+test-fixtures = ["dep:id3", "dep:mp3lame-sys", "dep:vorbis_rs"]
+
 [dependencies]
 rustyice-core      = { path = "../rustyice-core" }
 rustyice-codec     = { path = "../rustyice-codec" }
@@ -17,7 +23,12 @@ rubato.workspace     = true
 lofty.workspace      = true
 walkdir.workspace    = true
 rand.workspace       = true
+id3                  = { workspace = true, optional = true }
+mp3lame-sys          = { workspace = true, optional = true }
+vorbis_rs            = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio              = { workspace = true, features = ["full"] }
+# Internal tests need the fixture helper.
+rustyice-autodj    = { path = ".", features = ["test-fixtures"] }
