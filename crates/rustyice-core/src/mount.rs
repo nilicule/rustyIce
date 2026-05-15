@@ -103,6 +103,15 @@ pub struct ActiveMount {
     /// decoder cannot decode audio packets without them, so mid-stream join
     /// would otherwise produce silence/errors. `None` for MP3 output.
     pub header_bytes: Arc<ArcSwap<Option<Bytes>>>,
+    /// True while the active source is the in-process AutoDJ. Lets live
+    /// sources detect preemptable slots without coupling to the autodj crate.
+    pub source_is_autodj: AtomicBool,
+    /// Set by a live-source handler before it cancels the AutoDJ, telling the
+    /// AutoDJ task to park on `autodj_resume` instead of advancing.
+    pub preempt_pending: AtomicBool,
+    /// Notified by the live source's disconnect guard so the parked AutoDJ
+    /// task wakes and re-claims the slot.
+    pub autodj_resume: Arc<tokio::sync::Notify>,
 }
 
 impl ActiveMount {
@@ -117,6 +126,9 @@ impl ActiveMount {
             current_title: Arc::new(ArcSwap::from_pointee(None)),
             source_overlay: Arc::new(ArcSwap::from_pointee(None)),
             header_bytes: Arc::new(ArcSwap::from_pointee(None)),
+            source_is_autodj: AtomicBool::new(false),
+            preempt_pending: AtomicBool::new(false),
+            autodj_resume: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -510,5 +522,30 @@ mod tests {
         let id = mount.effective_identity(None);
         assert!(id.bitrate_kbps.is_none());
         assert!(id.audio_info.is_none());
+    }
+
+    #[test]
+    fn active_mount_autodj_flags_default_to_false() {
+        let mount = ActiveMount::new(make_mount_info("/a"), Arc::new(MockBus));
+        assert!(!mount.source_is_autodj.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!mount.preempt_pending.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn autodj_resume_notify_wakes_waiter() {
+        let mount = Arc::new(ActiveMount::new(make_mount_info("/a"), Arc::new(MockBus)));
+        let notify = mount.autodj_resume.clone();
+        let waiter = tokio::spawn(async move {
+            notify.notified().await;
+            true
+        });
+        // give the waiter a moment to park
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        mount.autodj_resume.notify_one();
+        let woke = tokio::time::timeout(std::time::Duration::from_millis(200), waiter)
+            .await
+            .expect("notify did not wake waiter")
+            .unwrap();
+        assert!(woke);
     }
 }
