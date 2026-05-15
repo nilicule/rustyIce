@@ -10,3 +10,6 @@ pub mod test_fixtures;
 pub use decode::{FileDecoder, PcmChunk};
 pub use playlist::{Order, scan};
 pub use tags::display_title;
+
+pub mod player;
+pub use player::play_track;

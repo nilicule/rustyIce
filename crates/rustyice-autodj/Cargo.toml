@@ -23,6 +23,7 @@ rubato.workspace     = true
 lofty.workspace      = true
 walkdir.workspace    = true
 rand.workspace       = true
+thiserror.workspace  = true
 id3                  = { workspace = true, optional = true }
 mp3lame-sys          = { workspace = true, optional = true }
 vorbis_rs            = { workspace = true, optional = true }
@@ -30,5 +31,6 @@ vorbis_rs            = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 tokio              = { workspace = true, features = ["full"] }
+futures.workspace  = true
 # Internal tests need the fixture helper.
 rustyice-autodj    = { path = ".", features = ["test-fixtures"] }
