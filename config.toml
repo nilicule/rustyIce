@@ -35,9 +35,17 @@ burst_size            = 65536
 # the connection stays open at real-time bitrate instead of uploading instantly.
 # source_max_kbps = 128
 
-[[mounts]]
-path            = "/stream"
-source_password = "hackme"
-name            = "Test Radio"
-description     = "Development stream"
-genre           = "Test"
+[[autodjs]]
+mount         = "/auto"
+name          = "AutoDJ"
+description   = "24/7 techno channel"
+genre         = "Techno"
+folder        = "/Users/remco/Music/Singles/Techno and House"
+enabled       = true
+loop          = true                # restart playlist when it ends
+order         = "shuffle"           # or "sequential"
+
+[autodjs.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
