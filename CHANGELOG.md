@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live Icecast sources connecting to an AutoDJ-owned mount preempt the rotation: the AutoDJ releases the slot, parks, and resumes from the next track once the live source disconnects.
 - Admin kick-source on an AutoDJ mount cancels the current track (skip-track semantics).
 
+### Fixed
+
+- Classic Icecast-2 source clients (libshout 2.x via Mixxx, EdCast, …) now receive an upfront `HTTP/1.0 200 OK` so they actually start streaming audio instead of hanging in `SHOUT_STATE_RESP` and disconnecting with zero bytes.
+
 ## [0.1.0] - 2026-05-15
 
 First public release.
