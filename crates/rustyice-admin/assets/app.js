@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const show = (id) => $(id).classList.remove('hidden');
 const hide = (id) => $(id).classList.add('hidden');
 
-const VIEWS = ['view-landing', 'view-login', 'view-admin', 'view-mount-detail'];
+const VIEWS = ['view-landing', 'view-login', 'view-admin', 'view-mount-detail', 'view-stream-detail'];
 function showView(id) {
   for (const v of VIEWS) (v === id ? show : hide)(v);
 }
@@ -171,8 +171,13 @@ const streamPlayer = {
 
 // ─── routing ───────────────────────────────────────────────────────────
 async function route() {
+  // route() runs only on navigation (hashchange / boot), never on poll —
+  // so tearing the player down here stops audio whenever the user leaves
+  // the detail page (or switches to a different stream).
+  streamPlayer.teardown();
   const hash = location.hash;
   const detailMatch = hash.match(/^#admin\/mount\/(.+)$/);
+  const streamMatch = hash.match(/^#stream\/(.+)$/);
   if (hash === '#admin') {
     const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
     if (me) enterAdmin(me.user);
@@ -184,6 +189,11 @@ async function route() {
     try { mountPath = decodeURIComponent(detailMatch[1]); }
     catch { location.hash = '#admin'; return; }
     enterMountDetail(me.user, mountPath);
+  } else if (streamMatch) {
+    let mountPath;
+    try { mountPath = decodeURIComponent(streamMatch[1]); }
+    catch { location.hash = ''; return; }
+    enterStreamDetail(mountPath);
   } else {
     enterLanding();
   }
@@ -224,6 +234,15 @@ function enterMountDetail(user, mountPath) {
   startPolling(refreshMountDetail);
 }
 
+function enterStreamDetail(mountPath) {
+  state.view = 'stream-detail';
+  state.mountPath = mountPath;
+  $('stream-detail-title').textContent = mountPath;
+  $('stream-meta').innerHTML = '';
+  showView('view-stream-detail');
+  startPolling(refreshStreamDetail);
+}
+
 function startPolling(fn) {
   stopPolling();
   fn();
@@ -236,6 +255,7 @@ function stopPolling() {
 function refreshCurrent() {
   if (state.view === 'admin') refreshAdmin();
   else if (state.view === 'mount-detail') refreshMountDetail();
+  else if (state.view === 'stream-detail') refreshStreamDetail();
   else if (state.view === 'landing') refreshLanding();
 }
 
@@ -334,6 +354,61 @@ async function refreshMountDetail() {
   } catch (e) {
     if (e && e.message !== 'unauthorized') console.error('mount detail refresh failed', e);
   }
+}
+
+// ─── data: public stream detail view ──────────────────────────────────
+async function refreshStreamDetail() {
+  try {
+    const [mounts, stats] = await Promise.all([
+      fetch('/api/mounts').then((r) => r.json()),
+      fetch('/api/stats').then((r) => r.json()),
+    ]);
+    $('footer-version').textContent = `v${stats.version}`;
+
+    const mount = mounts.find((m) => m.path === state.mountPath);
+
+    if (!mount || !mount.source_connected) {
+      $('stream-detail-title').textContent =
+        (mount && mount.name) || state.mountPath;
+      $('stream-meta').innerHTML =
+        '<div class="streams-empty">— stream offline —</div>';
+      streamPlayer.setOffline(true);
+      return;
+    }
+
+    $('stream-detail-title').textContent = mount.name || mount.path;
+
+    const url =
+      `${location.protocol}//${location.hostname}:${stats.stream_port}${mount.path}`;
+    // attach() resets playback, so only call it when the URL actually
+    // changes — otherwise the 3s poll would interrupt audio every tick.
+    if (streamPlayer.url !== url) streamPlayer.attach(url);
+    streamPlayer.setOffline(false);
+
+    $('stream-meta').innerHTML = renderStreamMeta(mount);
+  } catch (e) {
+    console.error('stream detail refresh failed', e);
+  }
+}
+
+function renderStreamMeta(m) {
+  const rows = [
+    ['NOW PLAYING', m.title || '—'],
+    ['NAME', m.name || '—'],
+    ['DESCRIPTION', m.description || '—'],
+    ['GENRE', m.genre || '—'],
+    ['CODEC', m.codec],
+    ['BITRATE', m.bitrate_kbps ? `${m.bitrate_kbps} kbps` : '—'],
+    ['LISTENERS', String(m.listener_count)],
+    ['UPTIME', fmtUptime(m.source_uptime_secs)],
+  ];
+  if (m.audio_info) rows.push(['AUDIO INFO', m.audio_info]);
+  return rows.map(([label, value]) => `
+    <div class="stream-meta-row">
+      <span class="mount-field-label">${label}</span>
+      <span class="stream-meta-value">${escapeHtml(value)}</span>
+    </div>
+  `).join('');
 }
 
 // ─── mount card rendering ──────────────────────────────────────────────
