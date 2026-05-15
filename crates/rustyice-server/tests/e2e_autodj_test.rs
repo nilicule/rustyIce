@@ -89,6 +89,7 @@ async fn build_server_with_autodj(loop_playlist: bool) -> TestServer {
         },
         mounts: vec![],
         autodjs: vec![autodj_cfg.clone()],
+        relays: vec![],
         tls: None,
         transcode: None,
     };
