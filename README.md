@@ -16,7 +16,8 @@ A single-binary Icecast-compatible streaming server written in Rust, supporting 
 | **Auth**        | Per-mount source passwords + optional global password for dynamic mounts; bcrypt-hashed admin users |
 | **Admin**       | Web dashboard + REST API (kick-source / kick-listener, listener detail) and Prometheus `/metrics` |
 | **Ops**         | Single static binary (async Tokio); `SIGHUP` hot-reload with no listener drops; optional config file with random-credential fallback |
-| **Landing**     | Public stream listing with one-click playback |
+| **Landing**     | Public stream listing; each entry opens a per-stream detail page |
+| **Web player**  | Built-in browser player on the stream detail page — play/stop, live now-playing card, real-time bars/oscilloscope visualizer |
 
 ## Quickstart
 

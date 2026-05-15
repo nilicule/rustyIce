@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reconnect-on-failure with exponential backoff (1 s → 30 s cap). Resets on successful connect.
 - Live Icecast sources connecting to a relay-owned mount preempt the relay until they disconnect, then the relay reconnects automatically. `/api/mounts` exposes `source_kind = "relay"` to disambiguate from live and AutoDJ sources.
 
+#### Stream detail page
+- Public per-stream detail page, reached by clicking a stream on the landing page (landing entries now open this page instead of the raw stream URL).
+- Built-in in-browser player — a custom play/stop control driving an HTML5 `<audio>` element, with an offline state for mounts with no live source.
+- Real-time audio visualizer with a bars (frequency spectrum) / line (oscilloscope waveform) toggle, driven by the Web Audio API; synthetic-motion fallback when Web Audio is unavailable.
+- Now-playing card showing the live title, description, genre, listener count, uptime, and a compact codec / bitrate / sample-rate / channels spec line.
+- Stream responses now send `Access-Control-Allow-Origin: *` so the browser can analyse the audio cross-origin for the visualizer.
+
 ### Fixed
 
 - Suppress `symphonia_metadata` INFO noise from the default logger so AutoDJ folders with tagged audio no longer flood the console with `unsupported frame GEOB` (and similar) lines.
