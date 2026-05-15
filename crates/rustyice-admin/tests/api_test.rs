@@ -72,6 +72,8 @@ fn make_state_with_admin(password: Option<&str>) -> AdminState {
         mounts: vec![],
         tls: None,
         transcode: None,
+        autodjs: vec![],
+        relays: vec![],
     };
     AdminState {
         mounts: MountRegistry::new(),
