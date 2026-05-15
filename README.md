@@ -187,6 +187,31 @@ Connecting a source whose codec is neither MP3 nor Ogg Vorbis (AAC, FLAC, …) t
 
 Send `SIGHUP` to hot-reload the config (mount metadata and auth credentials update without dropping listeners).
 
+### AutoDJ — local-folder rotation
+
+Stream a folder of MP3 / Ogg Vorbis files automatically. Each `[[autodjs]]` entry registers its own mount; live Icecast sources that connect to the same path preempt the rotation for the duration of the broadcast, then the AutoDJ resumes from the next track.
+
+```toml
+[[autodjs]]
+mount         = "/lofi"
+name          = "Lo-Fi Beats"
+description   = "24/7 study channel"
+genre         = "Lo-Fi"
+folder        = "/var/lib/rustyice/lofi"
+enabled       = true
+loop          = true                # restart playlist when it ends
+order         = "shuffle"           # or "sequential"
+
+[autodjs.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+```
+
+The transcode block is required: all files are decoded and re-encoded to a uniform output so listeners get a clean continuous stream regardless of per-file codec, sample rate, or bitrate differences. Per-track ICY title is derived from each file's tags (`artist - title`, or `title` alone, or the filename stem when the file is untagged). MP3 and Ogg Vorbis input files are supported; other extensions in the folder are skipped with a warning.
+
+When `loop = false`, the AutoDJ disconnects after the playlist exhausts (listeners drop). When `loop = true`, the folder is rescanned and re-shuffled at the end of each pass, so files added between passes are picked up automatically. SIGHUP picks up additions, removals, and field changes; metadata-only changes apply without restarting the stream.
+
 ## Load testing
 
 A separate `rustyice-loadtest` crate opens N concurrent listeners against a running server and reports per-second throughput and dropped connections. It is excluded from `default-members`, so `cargo build --release` never compiles or links it — invoke it explicitly:
