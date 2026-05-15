@@ -9,7 +9,7 @@ pub struct Config {
     pub limits: LimitsConfig,
     #[serde(default)]
     pub mounts: Vec<MountConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub autodjs: Vec<AutoDjConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
@@ -45,10 +45,7 @@ impl Config {
         }
         for a in &self.autodjs {
             if !seen.insert(&a.mount) {
-                return Err(format!(
-                    "autodj mount path '{}' collides with another mount or autodj",
-                    a.mount
-                ));
+                return Err(format!("duplicate autodj mount path: {}", a.mount));
             }
         }
         Ok(())
@@ -158,8 +155,13 @@ pub enum Order {
     Sequential,
 }
 
-fn default_order() -> Order { Order::Shuffle }
-fn default_true() -> bool { true }
+fn default_order() -> Order {
+    Order::Shuffle
+}
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AutoDjConfig {
@@ -559,6 +561,32 @@ folder = "/tmp"
 [autodjs.transcode]
 format       = "mp3"
 sample_rate  = 44100
+bitrate_kbps = 128
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let err = cfg.validate_paths().unwrap_err();
+        assert!(err.contains("/dup"));
+    }
+
+    #[test]
+    fn duplicate_autodj_paths_are_detected() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[autodjs]]
+mount  = "/dup"
+folder = "/tmp"
+[autodjs.transcode]
+format = "mp3"
+sample_rate = 44100
+bitrate_kbps = 128
+
+[[autodjs]]
+mount  = "/dup"
+folder = "/tmp"
+[autodjs.transcode]
+format = "mp3"
+sample_rate = 44100
 bitrate_kbps = 128
 "#
         );
