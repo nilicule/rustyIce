@@ -182,12 +182,11 @@ pub async fn handle_source_connection(
         .get(header::EXPECT)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue"));
-    let is_classic_icecast = !expects_continue
-        && content_length.is_none()
-        && headers
-            .get(header::TRANSFER_ENCODING)
-            .and_then(|v| v.to_str().ok())
-            .is_none_or(|v| !v.to_ascii_lowercase().contains("chunked"));
+    let is_chunked = headers
+        .get(header::TRANSFER_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
+    let is_classic_icecast = !expects_continue && content_length.is_none() && !is_chunked;
     let upfront_response: &[u8] = if expects_continue {
         b"HTTP/1.1 100 Continue\r\n\r\n"
     } else if is_classic_icecast {
@@ -209,10 +208,17 @@ pub async fn handle_source_connection(
     let chained = ChainReader::new(leftover, read_half);
     // Wrap so every byte read from the network is reflected in
     // `mount.stats.bytes_received` for the live inbound-bandwidth gauge.
+    // CountingReader stays innermost so the gauge reflects real bytes-on-wire
+    // including any chunked framing overhead.
     let counted = CountingReader::new(chained, mount.stats.clone());
-    let body_reader: Pin<Box<dyn AsyncRead + Send + Unpin>> = match content_length {
-        Some(len) => Box::pin(counted.take(len)),
-        None => Box::pin(counted),
+    let body_reader: Pin<Box<dyn AsyncRead + Send + Unpin>> = if is_chunked {
+        // RFC 7230 §3.3.3: chunked supersedes Content-Length when both are set,
+        // and end-of-stream is the zero-size chunk, not a fixed byte count.
+        Box::pin(crate::chunked::ChunkedDecoder::new(counted))
+    } else if let Some(len) = content_length {
+        Box::pin(counted.take(len))
+    } else {
+        Box::pin(counted)
     };
 
     let ingest = build_ingest_for_mount(&state, &mount_path, &mount);

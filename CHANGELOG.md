@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Classic Icecast-2 source clients (libshout 2.x via Mixxx, EdCast, …) now receive an upfront `HTTP/1.0 200 OK` so they actually start streaming audio instead of hanging in `SHOUT_STATE_RESP` and disconnecting with zero bytes.
+- Source-protocol handler now decodes HTTP/1.1 `Transfer-Encoding: chunked` request bodies. Previously chunked PUTs would hang indefinitely as the handler couldn't see end-of-body.
 
 ## [0.1.0] - 2026-05-15
 

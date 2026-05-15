@@ -787,18 +787,33 @@ async fn admin_title_appears_in_listener_icy_metadata() {
         "default metaint should be advertised"
     );
 
-    // Source pushes enough audio to fill at least one metaint window (8192 bytes).
-    // FAKE_MP3_FRAME is 8 bytes, so 8192 * 2 = 16384 bytes ensures we cross the boundary.
+    // Source pushes audio via a channel-driven streaming body so the connection
+    // stays alive while the listener reads across two metaint windows. A
+    // fixed-Vec body would EOF instantly and the disconnect guard would kick
+    // the listener mid-read.
+    use bytes::Bytes;
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx));
     let source_url = format!("http://127.0.0.1:{stream_port}/stream");
-    let audio: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(16_384).collect();
     let source_handle = tokio::spawn(async move {
         let _ = reqwest::Client::new()
             .put(&source_url)
             .header("Authorization", "Basic dGVzdHBhc3M=") // base64("testpass")
             .header("Content-Type", "audio/mpeg")
-            .body(audio)
+            .body(body)
             .send()
             .await;
+    });
+
+    // Push enough audio that the listener can cross at least one metaint
+    // (8192) and read a second meta frame after the DELETE below.
+    let feeder = tokio::spawn(async move {
+        for _ in 0..6 {
+            let frame: Vec<u8> = FAKE_MP3_FRAME.iter().copied().cycle().take(8_192).collect();
+            if body_tx.send(Ok(Bytes::from(frame))).await.is_err() {
+                break;
+            }
+        }
     });
 
     let meta = read_icy_meta(&mut listener_resp, 8192).await;
@@ -823,6 +838,7 @@ async fn admin_title_appears_in_listener_icy_metadata() {
     );
 
     drop(listener_resp);
+    let _ = feeder.await;
     let _ = source_handle.await;
     shutdown.cancel();
 }

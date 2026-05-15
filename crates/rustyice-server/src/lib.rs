@@ -2,6 +2,7 @@
 
 pub mod banner;
 pub mod bus;
+pub mod chunked;
 pub mod config_reload;
 pub mod shutdown;
 pub mod source_headers;
