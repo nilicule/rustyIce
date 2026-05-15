@@ -79,7 +79,13 @@ async fn build_server_with_autodj(loop_playlist: bool) -> TestServer {
             hostname: "localhost".to_string(),
         },
         logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
-        auth: AuthConfig { users: vec![], source_password: None },
+        // Global source_password lets a live PUT preempt the AutoDJ via the
+        // auth fallback (verify_source falls through to verify_default_source
+        // when there's no per-mount [[mounts]] entry).
+        auth: AuthConfig {
+            users: vec![],
+            source_password: Some("letmesource".to_string()),
+        },
         limits: LimitsConfig {
             max_listeners_global: 100,
             ring_size: 64,
@@ -251,5 +257,107 @@ async fn autodj_loop_false_ends_after_playlist() {
             }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn autodj_yields_to_live_source_and_resumes() {
+    let server = build_server_with_autodj(true).await;
+    let admin_url = format!("http://127.0.0.1:{}/api/mounts", server.admin_port);
+
+    // Wait for the AutoDJ to claim the mount.
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!("autodj never claimed the mount");
+        }
+        let json: serde_json::Value = reqwest::Client::new()
+            .get(&admin_url)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let kind = json
+            .as_array()
+            .and_then(|arr| arr.iter().find(|m| m["path"] == "/auto"))
+            .and_then(|m| m["source_kind"].as_str().map(String::from));
+        if kind.as_deref() == Some("autodj") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Live PUT preempts the AutoDJ using the global source_password.
+    use bytes::Bytes;
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
+    let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx));
+    let put_url = format!("http://127.0.0.1:{}/auto", server.stream_port);
+    let live_handle = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .put(&put_url)
+            .header("Authorization", "Basic c291cmNlOmxldG1lc291cmNl") // source:letmesource
+            .header("Content-Type", "audio/mpeg")
+            .body(body)
+            .send()
+            .await;
+    });
+
+    // Push a frame so the live source claims the slot.
+    body_tx
+        .send(Ok(Bytes::from_static(&[0xFF, 0xFB, 0x90, 0x04])))
+        .await
+        .unwrap();
+
+    // Verify source_kind flipped to "live" within 2s.
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(2) {
+            panic!("live source never preempted autodj");
+        }
+        let json: serde_json::Value = reqwest::Client::new()
+            .get(&admin_url)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let kind = json
+            .as_array()
+            .and_then(|arr| arr.iter().find(|m| m["path"] == "/auto"))
+            .and_then(|m| m["source_kind"].as_str().map(String::from));
+        if kind.as_deref() == Some("live") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Disconnect live → AutoDJ resumes.
+    drop(body_tx);
+    let _ = live_handle.await;
+
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!("autodj did not resume after live disconnect");
+        }
+        let json: serde_json::Value = reqwest::Client::new()
+            .get(&admin_url)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let kind = json
+            .as_array()
+            .and_then(|arr| arr.iter().find(|m| m["path"] == "/auto"))
+            .and_then(|m| m["source_kind"].as_str().map(String::from));
+        if kind.as_deref() == Some("autodj") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

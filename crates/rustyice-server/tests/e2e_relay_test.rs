@@ -7,7 +7,7 @@ use rustyice_admin::{ListenerMap, build_admin_router};
 use rustyice_auth::TomlBcryptAuth;
 use rustyice_core::{
     config::{
-        AuthConfig, Config, LimitsConfig, LogFormat, LoggingConfig, MountConfig, RelayConfig,
+        AuthConfig, Config, LimitsConfig, LogFormat, LoggingConfig, RelayConfig,
         ServerConfig,
     },
     mount::{ActiveMount, MountInfo, MountMetadata, MountRegistry},
@@ -110,14 +110,10 @@ impl Drop for TestServer {
     }
 }
 
-/// Build a relay server. When `allow_live_preempt` is true, also registers
-/// the relay mount path in `config.mounts` with the same source password so
-/// that a live source can preempt the relay via normal auth.
+/// Build a relay server. The global `[auth].source_password` is set so a
+/// live PUT can preempt the relay via the auth fallback (verify_source
+/// falls through to verify_default_source when there's no per-mount entry).
 async fn build_server_with_relay(upstream_port: u16) -> TestServer {
-    build_server_with_relay_inner(upstream_port, false).await
-}
-
-async fn build_server_with_relay_inner(upstream_port: u16, allow_live_preempt: bool) -> TestServer {
     let relay_cfg = RelayConfig {
         mount: "/relay".to_string(),
         upstream: format!("http://127.0.0.1:{upstream_port}/stream"),
@@ -131,26 +127,6 @@ async fn build_server_with_relay_inner(upstream_port: u16, allow_live_preempt: b
         max_listeners: None,
         burst_size: None,
         transcode: None,
-    };
-    // When `allow_live_preempt` is true we add the relay path to `config.mounts`
-    // so the auth backend knows the per-mount source password. Note: this means
-    // the same path appears in both `mounts` and `relays`; we intentionally skip
-    // `validate_paths` in tests, since that validation is only called by the
-    // server binary.
-    let mount_entries = if allow_live_preempt {
-        vec![MountConfig {
-            path: "/relay".to_string(),
-            source_password: "letmesource".to_string(),
-            max_listeners: None,
-            name: None,
-            description: None,
-            genre: None,
-            url: None,
-            transcode: None,
-            burst_size: None,
-        }]
-    } else {
-        vec![]
     };
     let cfg = Config {
         server: ServerConfig {
@@ -170,7 +146,7 @@ async fn build_server_with_relay_inner(upstream_port: u16, allow_live_preempt: b
             source_max_kbps: None,
             burst_size: 65_536,
         },
-        mounts: mount_entries,
+        mounts: vec![],
         autodjs: vec![],
         relays: vec![relay_cfg.clone()],
         tls: None,
@@ -347,7 +323,7 @@ async fn relay_reconnects_when_upstream_drops() {
 #[tokio::test(flavor = "multi_thread")]
 async fn relay_yields_to_live_source_and_resumes() {
     let upstream = spawn_upstream().await;
-    let server = build_server_with_relay_inner(upstream.port, true).await;
+    let server = build_server_with_relay(upstream.port).await;
 
     // Wait for the relay to be connected.
     tokio::time::sleep(Duration::from_millis(500)).await;

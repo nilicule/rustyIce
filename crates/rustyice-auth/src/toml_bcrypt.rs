@@ -64,7 +64,16 @@ impl AuthBackend for TomlBcryptAuth {
 
     async fn verify_source(&self, mount_path: &str, password: &str) -> Result<bool, AuthError> {
         let passwords = self.mount_passwords.load();
-        Ok(passwords.get(mount_path).is_some_and(|p| p == password))
+        if let Some(stored) = passwords.get(mount_path) {
+            // Per-mount password configured: strict check, no fallback.
+            return Ok(stored == password);
+        }
+        // No per-mount password (mount is AutoDJ-only, Relay-only, or not in
+        // `[[mounts]]` at all): fall through to the global source_password.
+        // This is the same credential that authorizes dynamic-mount creation,
+        // and it's what lets a live source preempt an AutoDJ or Relay on a
+        // mount path with no `[[mounts]]` entry of its own.
+        self.verify_default_source(password).await
     }
 
     async fn verify_default_source(&self, password: &str) -> Result<bool, AuthError> {
@@ -171,6 +180,36 @@ mod tests {
     async fn verify_source_unknown_mount() {
         let auth = TomlBcryptAuth::new(&make_config(&[], &[]));
         assert!(!auth.verify_source("/nothere", "anything").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn verify_source_falls_back_to_default_when_no_per_mount_password() {
+        // Mount has no entry in [[mounts]] (e.g. it's an AutoDJ-only or
+        // Relay-only mount); a live source pushing with the global
+        // source_password must succeed so it can preempt.
+        let mut cfg = make_config(&[], &[]);
+        cfg.auth.source_password = Some("global".to_string());
+        let auth = TomlBcryptAuth::new(&cfg);
+        assert!(auth.verify_source("/autodj-only", "global").await.unwrap());
+        assert!(!auth.verify_source("/autodj-only", "wrong").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn verify_source_per_mount_password_takes_priority_over_default() {
+        // Per-mount password is strict — the global source_password must NOT
+        // unlock a mount that has its own credential.
+        let mut cfg = make_config(&[], &[("/stream", "per-mount")]);
+        cfg.auth.source_password = Some("global".to_string());
+        let auth = TomlBcryptAuth::new(&cfg);
+        assert!(auth.verify_source("/stream", "per-mount").await.unwrap());
+        assert!(!auth.verify_source("/stream", "global").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn verify_source_unknown_mount_no_default_returns_false() {
+        // Fail-closed: neither per-mount nor global credentials configured.
+        let auth = TomlBcryptAuth::new(&make_config(&[], &[]));
+        assert!(!auth.verify_source("/autodj-only", "anything").await.unwrap());
     }
 
     fn make_config_with_default_source(default_pw: Option<&str>) -> Config {
