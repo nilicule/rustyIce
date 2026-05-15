@@ -4,16 +4,16 @@ A single-binary Icecast-compatible streaming server written in Rust, supporting 
 
 ## Features
 
-- Icecast2-compatible source ingest (`SOURCE` and `PUT`)
-- MP3 and Ogg Vorbis streaming with automatic bitrate detection and real-time pacing
-- Burst-on-connect — new listeners get an immediate prefill of recent audio (Icecast-compatible `burst_size`, default 64 KiB, per-mount override)
-- **Transcoding** — decode/re-encode to a consistent output; per-mount or global, passthrough when unset. Any combination of MP3 / Ogg Vorbis source and MP3 / Ogg Vorbis target.
-- **AutoDJ** — auto-rotate a folder of MP3 / Ogg Vorbis files on a mount, with shuffle or sequential ordering, per-track ICY titles from file tags, and preemption by live Icecast sources
-- Per-mount source passwords, plus an optional global password for dynamic mounts
-- Public landing page with one-click playback
-- Admin dashboard + REST API — kick-source / kick-listener, per-mount listener detail, Prometheus `/metrics`
-- Hot-reload via `SIGHUP` — no listener drops
-- Single static binary, async (Tokio), with an _optional_ config file (boots on sensible defaults with randomly-generated credentials when none is provided)
+| Component       | What it does |
+|-----------------|--------------|
+| **Ingest**      | Icecast2-compatible source protocol (`SOURCE` / `PUT`), MP3 + Ogg Vorbis, automatic bitrate detection, real-time pacing |
+| **Streaming**   | HTTP output with burst-on-connect prefill, ICY metadata, Vorbis header priming for mid-stream joiners |
+| **Transcoding** | Decode/re-encode between MP3 and Ogg Vorbis, per-mount or global, passthrough when unset |
+| **AutoDJ**      | Auto-rotate a folder of MP3 / Ogg Vorbis on a mount, shuffle or sequential, tag-derived ICY titles, live-source preemption |
+| **Auth**        | Per-mount source passwords + optional global password for dynamic mounts; bcrypt-hashed admin users |
+| **Admin**       | Web dashboard + REST API (kick-source / kick-listener, listener detail) and Prometheus `/metrics` |
+| **Ops**         | Single static binary (async Tokio); `SIGHUP` hot-reload with no listener drops; optional config file with random-credential fallback |
+| **Landing**     | Public stream listing with one-click playback |
 
 ## Quickstart
 
