@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Suppress `symphonia_metadata` INFO noise from the default logger so AutoDJ folders with tagged audio no longer flood the console with `unsupported frame GEOB` (and similar) lines. Set `RUST_LOG=info,symphonia_metadata=info` to restore the chatter.
+- Suppress `symphonia_metadata` INFO noise from the default logger so AutoDJ folders with tagged audio no longer flood the console with `unsupported frame GEOB` (and similar) lines. 
 
 ## [0.2.0] - 2026-05-15
 
