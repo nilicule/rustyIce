@@ -10,7 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Server
-- Show clickable admin link under banner when starting up server
+- Show clickable admin link under banner when starting up server.
+
+#### AutoDJ (`rustyice-autodj`)
+- New `[[autodjs]]` config block — each entry registers its own mount and plays a folder of MP3 / Ogg Vorbis files automatically. Per-AutoDJ fields: `mount`, `folder`, `name`, `description`, `genre`, `url`, `enabled`, `loop`, `order` (`shuffle` | `sequential`), `max_listeners`, `burst_size`, plus a required `[autodjs.transcode]` block.
+- Per-track ICY title derived from each file's tags via `lofty` (`artist - title`, `title` alone, or the filename stem as fallback).
+- Recursive folder scan, rescanned + reshuffled at the end of each loop pass so files added between passes are picked up.
+- All files decoded via `symphonia` and re-encoded through the existing transcode pipeline, yielding one continuous output stream regardless of per-file codec / sample rate / bitrate.
+- Live Icecast sources connecting to an AutoDJ-owned mount preempt the rotation: the AutoDJ releases the slot, parks, and resumes from the next track once the live source disconnects.
+- Admin kick-source on an AutoDJ mount cancels the current track (skip-track semantics).
+- `loop = false` disconnects after the playlist exhausts; `loop = true` rescans and continues.
+- SIGHUP picks up additions, removals, and field changes — metadata-only changes (`name`, `description`, `genre`, `url`, `max_listeners`) live-swap without restarting the stream; `folder`, `loop`, `order`, `transcode`, `burst_size`, and `enabled` changes respawn the player.
+- Path-uniqueness validation across `[[mounts]]` and `[[autodjs]]` at config load.
+
+#### Admin
+- `/api/mounts` now exposes `source_kind` (`"none"` | `"live"` | `"autodj"`) so UIs can distinguish an in-process AutoDJ from a connected live source.
 
 ## [0.1.0] - 2026-05-15
 
