@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Server
 - Show clickable admin link under banner when starting up server.
+
+#### AutoDJ 
 - New `[[autodjs]]` config block — each entry registers its own mount and plays a folder of MP3 / Ogg Vorbis files automatically
 - Recursive folder scan, rescanned + reshuffled at the end of each loop pass so files added between passes are picked up.
 - Live Icecast sources connecting to an AutoDJ-owned mount preempt the rotation: the AutoDJ releases the slot, parks, and resumes from the next track once the live source disconnects.
