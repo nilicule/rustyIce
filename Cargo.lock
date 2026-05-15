@@ -1928,6 +1928,7 @@ version = "0.2.0"
 dependencies = [
  "arc-swap",
  "bytes",
+ "futures",
  "id3",
  "lofty",
  "mp3lame-sys",
@@ -1939,6 +1940,7 @@ dependencies = [
  "rustyice-transcode",
  "symphonia",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2030,6 +2032,7 @@ dependencies = [
  "reqwest",
  "rustyice-admin",
  "rustyice-auth",
+ "rustyice-autodj",
  "rustyice-codec",
  "rustyice-core",
  "rustyice-ingest",

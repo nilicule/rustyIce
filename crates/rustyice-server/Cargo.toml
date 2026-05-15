@@ -51,6 +51,8 @@ reqwest             = { version = "0.12", features = ["stream", "json"] }
 serde_json.workspace = true
 bytes.workspace     = true
 rustyice-transcode  = { path = "../rustyice-transcode" }
+rustyice-autodj     = { path = "../rustyice-autodj", features = ["test-fixtures"] }
+futures.workspace   = true
 
 # ── Package metadata for cargo-deb ─────────────────────────────────────────
 [package.metadata.deb]
