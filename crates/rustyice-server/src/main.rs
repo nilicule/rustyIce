@@ -146,6 +146,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown: shutdown.clone(),
     };
 
+    // ── Relays ─────────────────────────────────────────────────────────────
+    let relay_registry = Arc::new(rustyice_server::config_reload::RelayRegistry::new());
+    for rc in &cfg.relays {
+        let bus = Arc::new(TokioBroadcastBus::new(
+            cfg.limits.ring_size,
+            rc.burst_size.unwrap_or(cfg.limits.burst_size) as usize,
+        ));
+        // Codec placeholder; the relay updates the mount's codec from the
+        // upstream Content-Type on each successful connect.
+        let mount = Arc::new(ActiveMount::new(
+            MountInfo {
+                path: rc.mount.clone(),
+                codec: CodecId::MP3,
+                // Relays don't accept live ingest via a per-mount password;
+                // live sources still preempt via the source_kind mechanism
+                // using the global `[auth].source_password` if configured.
+                source_password: String::new(),
+                max_listeners: rc.max_listeners,
+                metadata: MountMetadata {
+                    name: rc.name.clone(),
+                    description: rc.description.clone(),
+                    genre: rc.genre.clone(),
+                    url: rc.url.clone(),
+                },
+            },
+            bus,
+        ));
+        mounts.add(mount.clone());
+        info!(mount = %rc.mount, enabled = rc.enabled, "registered relay mount");
+        if rc.enabled {
+            let cancel = shutdown.child_token();
+            let task = rustyice_server::relay::RelayTask::from_config(
+                rc.clone(),
+                mount,
+                app_state.clone(),
+                cancel.clone(),
+            );
+            let handle = task.spawn();
+            relay_registry.insert(rc.clone(), cancel, handle).await;
+        }
+    }
+
     // ── Bind ports ──────────────────────────────────────────────────────────
     let stream_listener = TcpListener::bind(cfg.server.stream_bind).await?;
     let admin_listener = TcpListener::bind(cfg.server.admin_bind).await?;
@@ -169,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth,
             mounts,
             autodj_registry.clone(),
+            relay_registry.clone(),
             shutdown.clone(),
         ));
     }

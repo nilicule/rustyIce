@@ -13,6 +13,7 @@ pub async fn watch_sighup(
     auth: Arc<dyn AuthBackend + Send + Sync>,
     mounts: MountRegistry,
     autodjs: Arc<AutoDjRegistry>,
+    relays: Arc<RelayRegistry>,
     shutdown: CancellationToken,
 ) {
     #[cfg(unix)]
@@ -30,7 +31,7 @@ pub async fn watch_sighup(
             tokio::select! {
                 _ = sighup.recv() => {
                     info!("SIGHUP received, reloading config from {}", config_path.display());
-                    do_reload(&config_path, &config, &auth, &mounts, &autodjs, &shutdown).await;
+                    do_reload(&config_path, &config, &auth, &mounts, &autodjs, &relays, &shutdown).await;
                 }
                 () = shutdown.cancelled() => {
                     info!("config reload task shutting down");
@@ -52,6 +53,7 @@ async fn do_reload(
     auth: &Arc<dyn AuthBackend + Send + Sync>,
     mounts: &MountRegistry,
     autodjs: &Arc<AutoDjRegistry>,
+    _relays: &Arc<RelayRegistry>,
     shutdown: &CancellationToken,
 ) {
     let new_cfg = match rustyice_core::config::load(path) {
@@ -197,7 +199,7 @@ async fn do_reload(
     info!("config reloaded successfully");
 }
 
-use rustyice_core::config::AutoDjConfig;
+use rustyice_core::config::{AutoDjConfig, RelayConfig};
 use std::collections::HashMap;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -229,6 +231,44 @@ impl AutoDjRegistry {
     ) {
         let mut g = self.inner.lock().await;
         g.insert(cfg.mount.clone(), AutoDjEntry { cfg, cancel, handle });
+    }
+
+    pub async fn cancel(&self, mount: &str) {
+        let entry = { self.inner.lock().await.remove(mount) };
+        if let Some(e) = entry {
+            e.cancel.cancel();
+            let _ = e.handle.await;
+        }
+    }
+}
+
+/// Live set of running relay tasks, keyed by mount path. Shared between
+/// `main` (initial spawn) and the SIGHUP reloader (diff + respawn).
+#[derive(Default)]
+pub struct RelayRegistry {
+    inner: AsyncMutex<HashMap<String, RelayEntry>>,
+}
+
+struct RelayEntry {
+    #[allow(dead_code)]
+    cfg: RelayConfig,
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl RelayRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn insert(
+        &self,
+        cfg: RelayConfig,
+        cancel: CancellationToken,
+        handle: JoinHandle<()>,
+    ) {
+        let mut g = self.inner.lock().await;
+        g.insert(cfg.mount.clone(), RelayEntry { cfg, cancel, handle });
     }
 
     pub async fn cancel(&self, mount: &str) {
