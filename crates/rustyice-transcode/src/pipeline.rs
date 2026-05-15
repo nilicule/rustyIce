@@ -67,6 +67,26 @@ impl TranscodePipeline {
         self.process_pcm(pcm, sample_rate, channels)
     }
 
+    /// Feed already-decoded PCM. Mirrors `push` but skips the decoder stage —
+    /// used by the AutoDJ, which reads PCM straight out of symphonia.
+    ///
+    /// `samples` must be interleaved according to `channels` (e.g. L,R,L,R for
+    /// stereo) and in `f32` range `[-1.0, 1.0]`.
+    ///
+    /// # Errors
+    /// Returns [`TranscodeError`] on encoder failure or resampler failure.
+    pub fn push_pcm(
+        &mut self,
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: u8,
+    ) -> Result<Bytes, TranscodeError> {
+        if samples.is_empty() || sample_rate == 0 || channels == 0 {
+            return Ok(Bytes::new());
+        }
+        self.process_pcm(samples, sample_rate, channels)
+    }
+
     /// Flush resampler tail then encoder's internal buffers at end of stream.
     pub fn flush(&mut self) -> Result<Bytes, TranscodeError> {
         let mut combined = Vec::new();
@@ -390,6 +410,30 @@ mod tests {
             if f > 0 { result.extend_from_slice(&flush[..f as usize]); }
             result
         }
+    }
+
+    #[test]
+    fn push_pcm_produces_mp3_sync_words() {
+        let mut pipeline = mp3_pipeline();
+        // 0.5 s of stereo silence at 44100 Hz
+        let pcm = vec![0.0_f32; 44_100];
+        let out = pipeline.push_pcm(pcm, 44_100, 2).unwrap();
+        let tail = pipeline.flush().unwrap();
+        let mut all = out.to_vec();
+        all.extend_from_slice(&tail);
+        assert!(!all.is_empty(), "push_pcm must produce some output");
+        assert!(
+            all.windows(2).any(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0),
+            "output must contain MP3 sync words",
+        );
+    }
+
+    #[test]
+    fn push_pcm_resamples_when_source_rate_differs() {
+        let mut pipeline = mp3_pipeline(); // 44100 target
+        let pcm = vec![0.0_f32; 48_000];   // 0.5 s @ 48000 Hz stereo
+        let _ = pipeline.push_pcm(pcm, 48_000, 2).unwrap();
+        assert!(pipeline.resampler_is_active(), "resampler should engage on rate mismatch");
     }
 
     #[test]
