@@ -4,9 +4,31 @@ use crate::types::CodecId;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
+
+/// Who currently owns a mount's source slot. Stored on `ActiveMount` as
+/// an `AtomicU8`; reads/writes go through `load_source_kind`/`store_source_kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SourceKind {
+    None = 0,
+    Live = 1,
+    AutoDj = 2,
+    Relay = 3,
+}
+
+impl SourceKind {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => SourceKind::Live,
+            2 => SourceKind::AutoDj,
+            3 => SourceKind::Relay,
+            _ => SourceKind::None,
+        }
+    }
+}
 
 /// Hot-reloadable display metadata for a mount.
 #[derive(Debug, Clone, Default)]
@@ -103,15 +125,17 @@ pub struct ActiveMount {
     /// decoder cannot decode audio packets without them, so mid-stream join
     /// would otherwise produce silence/errors. `None` for MP3 output.
     pub header_bytes: Arc<ArcSwap<Option<Bytes>>>,
-    /// True while the active source is the in-process AutoDJ. Lets live
-    /// sources detect preemptable slots without coupling to the autodj crate.
-    pub source_is_autodj: AtomicBool,
-    /// Set by a live-source handler before it cancels the AutoDJ, telling the
-    /// AutoDJ task to park on `autodj_resume` instead of advancing.
+    /// What currently owns the source slot: None, a live HTTP source, the
+    /// in-process AutoDJ, or a Relay. Read on every PUT/SOURCE connect to
+    /// decide whether preemption is allowed.
+    pub source_kind: AtomicU8,
+    /// Set by a live-source handler before it cancels a non-live owner of
+    /// the slot, telling the AutoDJ or Relay task to park on
+    /// `non_live_resume` instead of advancing.
     pub preempt_pending: AtomicBool,
-    /// Notified by the live source's disconnect guard so the parked AutoDJ
-    /// task wakes and re-claims the slot.
-    pub autodj_resume: Arc<tokio::sync::Notify>,
+    /// Notified by the live source's disconnect guard so a parked AutoDJ
+    /// or Relay task wakes and re-claims the slot.
+    pub non_live_resume: Arc<tokio::sync::Notify>,
 }
 
 impl ActiveMount {
@@ -126,9 +150,9 @@ impl ActiveMount {
             current_title: Arc::new(ArcSwap::from_pointee(None)),
             source_overlay: Arc::new(ArcSwap::from_pointee(None)),
             header_bytes: Arc::new(ArcSwap::from_pointee(None)),
-            source_is_autodj: AtomicBool::new(false),
+            source_kind: AtomicU8::new(SourceKind::None as u8),
             preempt_pending: AtomicBool::new(false),
-            autodj_resume: Arc::new(tokio::sync::Notify::new()),
+            non_live_resume: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -146,6 +170,17 @@ impl ActiveMount {
             .ok()?
             .as_ref()
             .map(Instant::elapsed)
+    }
+
+    /// Snapshot the current SourceKind.
+    #[must_use]
+    pub fn load_source_kind(&self) -> SourceKind {
+        SourceKind::from_u8(self.source_kind.load(Ordering::Acquire))
+    }
+
+    /// Set the current SourceKind.
+    pub fn store_source_kind(&self, k: SourceKind) {
+        self.source_kind.store(k as u8, Ordering::Release);
     }
 
     /// Merge `info.metadata` (config) and `source_overlay` (live) into the
@@ -525,23 +560,35 @@ mod tests {
     }
 
     #[test]
-    fn active_mount_autodj_flags_default_to_false() {
+    fn active_mount_source_kind_defaults_to_none() {
         let mount = ActiveMount::new(make_mount_info("/a"), Arc::new(MockBus));
-        assert!(!mount.source_is_autodj.load(std::sync::atomic::Ordering::Relaxed));
-        assert!(!mount.preempt_pending.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(mount.load_source_kind(), SourceKind::None);
+        assert!(!mount.preempt_pending.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn active_mount_source_kind_round_trips() {
+        let mount = ActiveMount::new(make_mount_info("/a"), Arc::new(MockBus));
+        mount.store_source_kind(SourceKind::Live);
+        assert_eq!(mount.load_source_kind(), SourceKind::Live);
+        mount.store_source_kind(SourceKind::AutoDj);
+        assert_eq!(mount.load_source_kind(), SourceKind::AutoDj);
+        mount.store_source_kind(SourceKind::Relay);
+        assert_eq!(mount.load_source_kind(), SourceKind::Relay);
+        mount.store_source_kind(SourceKind::None);
+        assert_eq!(mount.load_source_kind(), SourceKind::None);
     }
 
     #[tokio::test]
-    async fn autodj_resume_notify_wakes_waiter() {
+    async fn non_live_resume_notify_wakes_waiter() {
         let mount = Arc::new(ActiveMount::new(make_mount_info("/a"), Arc::new(MockBus)));
-        let notify = mount.autodj_resume.clone();
+        let notify = mount.non_live_resume.clone();
         let waiter = tokio::spawn(async move {
             notify.notified().await;
             true
         });
-        // give the waiter a moment to park
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        mount.autodj_resume.notify_one();
+        mount.non_live_resume.notify_one();
         let woke = tokio::time::timeout(std::time::Duration::from_millis(200), waiter)
             .await
             .expect("notify did not wake waiter")

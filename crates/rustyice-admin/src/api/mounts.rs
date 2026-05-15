@@ -97,13 +97,14 @@ pub struct ListenerList {
 
 fn source_kind(m: &rustyice_core::mount::ActiveMount) -> &'static str {
     use std::sync::atomic::Ordering;
+    use rustyice_core::mount::SourceKind;
     if !m.source_connected.load(Ordering::Acquire) {
         return "none";
     }
-    if m.source_is_autodj.load(Ordering::Acquire) {
-        "autodj"
-    } else {
-        "live"
+    match m.load_source_kind() {
+        SourceKind::AutoDj => "autodj",
+        SourceKind::Relay  => "relay",
+        SourceKind::None | SourceKind::Live => "live",
     }
 }
 
@@ -159,16 +160,20 @@ mod tests {
     }
 
     #[test]
-    fn source_kind_reports_none_live_and_autodj() {
+    fn source_kind_reports_none_live_autodj_and_relay() {
         let m_none = ActiveMount::new(info("/n"), Arc::new(NullBus));
         let m_live = ActiveMount::new(info("/l"), Arc::new(NullBus));
         m_live.source_connected.store(true, Ordering::Release);
         let m_auto = ActiveMount::new(info("/a"), Arc::new(NullBus));
         m_auto.source_connected.store(true, Ordering::Release);
-        m_auto.source_is_autodj.store(true, Ordering::Release);
+        m_auto.store_source_kind(rustyice_core::mount::SourceKind::AutoDj);
+        let m_relay = ActiveMount::new(info("/r"), Arc::new(NullBus));
+        m_relay.source_connected.store(true, Ordering::Release);
+        m_relay.store_source_kind(rustyice_core::mount::SourceKind::Relay);
 
         assert_eq!(source_kind(&m_none), "none");
         assert_eq!(source_kind(&m_live), "live");
         assert_eq!(source_kind(&m_auto), "autodj");
+        assert_eq!(source_kind(&m_relay), "relay");
     }
 }

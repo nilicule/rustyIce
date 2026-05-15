@@ -3,7 +3,7 @@ use crate::tags::display_title;
 use bytes::Bytes;
 use rustyice_codec::OggHeaderCapture;
 use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
-use rustyice_core::mount::ActiveMount;
+use rustyice_core::mount::{ActiveMount, SourceKind};
 use rustyice_core::types::{AudioPayload, CodecId, EncodedPacket, StreamPacket};
 use rustyice_transcode::TranscodePipeline;
 use std::path::Path;
@@ -239,7 +239,7 @@ impl AutoDjPlayer {
                     if shutdown.is_cancelled() { return; }
                     // Cancelled by source_cancel — either preempt or kick.
                     if mount.preempt_pending.swap(false, Ordering::AcqRel) {
-                        mount.autodj_resume.notified().await;
+                        mount.non_live_resume.notified().await;
                     }
                     // either branch: advance and loop
                     continue;
@@ -273,7 +273,7 @@ async fn wait_for_live_source_to_release(
     mount: &Arc<ActiveMount>,
     shutdown: &CancellationToken,
 ) {
-    let notify = mount.autodj_resume.clone();
+    let notify = mount.non_live_resume.clone();
     while mount.source_connected.load(Ordering::Acquire) {
         tokio::select! {
             biased;
@@ -298,7 +298,7 @@ fn claim_slot(mount: &Arc<ActiveMount>) -> bool {
     {
         return false;
     }
-    mount.source_is_autodj.store(true, Ordering::Release);
+    mount.store_source_kind(SourceKind::AutoDj);
     *mount.connected_at.lock().unwrap() = Some(Instant::now());
     let token = CancellationToken::new();
     *mount.source_cancel.lock().unwrap() = Some(token);
@@ -310,7 +310,7 @@ fn release_slot(mount: &Arc<ActiveMount>) {
     *mount.connected_at.lock().unwrap() = None;
     mount.source_overlay.store(Arc::new(None));
     mount.header_bytes.store(Arc::new(None));
-    mount.source_is_autodj.store(false, Ordering::Release);
+    mount.store_source_kind(SourceKind::None);
     mount.source_connected.store(false, Ordering::Release);
 }
 
@@ -505,6 +505,6 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
         assert!(result.is_ok(), "player did not exit within 5s when loop=false");
         assert!(!mount.source_connected.load(Ordering::Acquire), "slot must be released");
-        assert!(!mount.source_is_autodj.load(Ordering::Acquire));
+        assert_eq!(mount.load_source_kind(), rustyice_core::mount::SourceKind::None);
     }
 }
