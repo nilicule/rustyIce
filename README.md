@@ -1,5 +1,7 @@
 # rustyIce
 
+![rustyice logo](https://raw.githubusercontent.com/nilicule/rustyIce/main/docs/assets/rustyice_logo.png)
+
 A single-binary Icecast-compatible streaming server written in Rust, supporting MP3 and Ogg Vorbis.
 
 ## Features
