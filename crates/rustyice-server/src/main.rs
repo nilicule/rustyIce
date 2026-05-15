@@ -344,8 +344,14 @@ fn print_banner(admin_bind: SocketAddr) {
 
 fn setup_tracing(cfg: &Config) {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cfg.logging.level));
+    // Honor RUST_LOG verbatim when set; otherwise start from the configured
+    // level and silence known-noisy third-party modules. symphonia in
+    // particular logs every unsupported ID3v2 frame (GEOB, etc.) at INFO,
+    // which floods the log for any AutoDJ folder containing tagged files.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(&cfg.logging.level)
+            .add_directive("symphonia_metadata=warn".parse().unwrap())
+    });
     match cfg.logging.format {
         rustyice_core::config::LogFormat::Json => {
             fmt().json().with_env_filter(filter).init();
