@@ -9,6 +9,8 @@ pub struct Config {
     pub limits: LimitsConfig,
     #[serde(default)]
     pub mounts: Vec<MountConfig>,
+    #[serde(default)]
+    pub autodjs: Vec<AutoDjConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -27,6 +29,29 @@ impl Config {
     #[must_use]
     pub fn effective_burst_size(&self, mount: &MountConfig) -> u32 {
         mount.burst_size.unwrap_or(self.limits.burst_size)
+    }
+
+    /// Verify that every `[[mounts]].path` and `[[autodjs]].mount` is unique.
+    /// Call after parsing.
+    ///
+    /// # Errors
+    /// Returns a human-readable description of the first collision found.
+    pub fn validate_paths(&self) -> Result<(), String> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for m in &self.mounts {
+            if !seen.insert(&m.path) {
+                return Err(format!("duplicate mount path: {}", m.path));
+            }
+        }
+        for a in &self.autodjs {
+            if !seen.insert(&a.mount) {
+                return Err(format!(
+                    "autodj mount path '{}' collides with another mount or autodj",
+                    a.mount
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -126,6 +151,41 @@ pub struct TranscodeConfig {
     pub bitrate_kbps: u32,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Order {
+    Shuffle,
+    Sequential,
+}
+
+fn default_order() -> Order { Order::Shuffle }
+fn default_true() -> bool { true }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AutoDjConfig {
+    pub mount: String,
+    pub folder: std::path::PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(rename = "loop", default = "default_true")]
+    pub loop_playlist: bool,
+    #[serde(default = "default_order")]
+    pub order: Order,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_listeners: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst_size: Option<u32>,
+    pub transcode: TranscodeConfig,
+}
+
 /// Reserved for v2 ACME / Let's Encrypt support. Parsed but unused in v1.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct TlsConfig {
@@ -141,7 +201,10 @@ pub struct TlsConfig {
 /// Returns [`crate::error::ConfigError`] if the file cannot be read or parsed.
 pub fn load(path: &std::path::Path) -> Result<Config, crate::error::ConfigError> {
     let contents = std::fs::read_to_string(path)?;
-    parse_str(&contents)
+    let cfg: Config = parse_str(&contents)?;
+    cfg.validate_paths()
+        .map_err(crate::error::ConfigError::Invalid)?;
+    Ok(cfg)
 }
 
 /// Parse a TOML config from a string.
@@ -429,5 +492,100 @@ source_password = "secret"
         );
         let cfg: Config = toml::from_str(&src).unwrap();
         assert!(cfg.effective_transcode(&cfg.mounts[0]).is_none());
+    }
+
+    #[test]
+    fn parses_autodj_entry() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[autodjs]]
+mount        = "/lofi"
+name         = "Lo-Fi"
+description  = "study channel"
+genre        = "Lo-Fi"
+folder       = "/var/lib/rustyice/lofi"
+order        = "shuffle"
+
+[autodjs.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        assert_eq!(cfg.autodjs.len(), 1);
+        let a = &cfg.autodjs[0];
+        assert_eq!(a.mount, "/lofi");
+        assert_eq!(a.name.as_deref(), Some("Lo-Fi"));
+        assert_eq!(a.folder, std::path::PathBuf::from("/var/lib/rustyice/lofi"));
+        assert!(a.enabled);
+        assert!(a.loop_playlist);
+        assert!(matches!(a.order, Order::Shuffle));
+        assert_eq!(a.transcode.bitrate_kbps, 128);
+    }
+
+    #[test]
+    fn autodj_order_defaults_to_shuffle_when_omitted() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[autodjs]]
+mount  = "/x"
+folder = "/tmp"
+
+[autodjs.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        assert!(matches!(cfg.autodjs[0].order, Order::Shuffle));
+        assert!(cfg.autodjs[0].enabled);
+        assert!(cfg.autodjs[0].loop_playlist);
+    }
+
+    #[test]
+    fn autodj_mount_path_collision_with_mounts_is_detected() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[mounts]]
+path            = "/dup"
+source_password = "x"
+
+[[autodjs]]
+mount  = "/dup"
+folder = "/tmp"
+
+[autodjs.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        let err = cfg.validate_paths().unwrap_err();
+        assert!(err.contains("/dup"));
+    }
+
+    #[test]
+    fn unique_autodj_and_mount_paths_validate_ok() {
+        let src = format!(
+            r#"{BASE_CONFIG}
+[[mounts]]
+path            = "/live"
+source_password = "x"
+
+[[autodjs]]
+mount  = "/auto"
+folder = "/tmp"
+
+[autodjs.transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+"#
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        cfg.validate_paths().unwrap();
     }
 }
