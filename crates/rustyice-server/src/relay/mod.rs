@@ -4,5 +4,6 @@
 //! `BroadcastBus` + `IcecastIngest` pipeline.
 
 pub mod backoff;
+pub mod client;
 
 pub use backoff::Backoff;
