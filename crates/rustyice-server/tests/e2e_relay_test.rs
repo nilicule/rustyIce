@@ -252,9 +252,13 @@ async fn relay_streams_audio_to_listener() {
 
     use futures::StreamExt;
     let mut stream = resp.bytes_stream();
-    let chunk = tokio::time::timeout(Duration::from_secs(3), stream.next())
+    // Generous deadline: the three relay e2e tests run concurrently, and a
+    // cold relay's connect→stream pipeline can exceed a tight bound under
+    // that load. A broken relay never delivers, so this still fails in
+    // bounded time and stays meaningful.
+    let chunk = tokio::time::timeout(Duration::from_secs(10), stream.next())
         .await
-        .expect("no bytes within 3s")
+        .expect("no bytes within 10s")
         .expect("stream ended")
         .unwrap();
     assert!(!chunk.is_empty());
