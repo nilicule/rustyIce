@@ -22,6 +22,7 @@ rustyice-auth   = { path = "../rustyice-auth" }
 rustyice-ingest = { path = "../rustyice-ingest" }
 rustyice-output = { path = "../rustyice-output" }
 rustyice-admin  = { path = "../rustyice-admin" }
+rustyice-autodj = { path = "../rustyice-autodj" }
 
 tokio           = { workspace = true, features = ["full"] }
 axum.workspace  = true

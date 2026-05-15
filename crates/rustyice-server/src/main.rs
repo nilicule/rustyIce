@@ -14,7 +14,7 @@ use arc_swap::ArcSwap;
 use rustyice_admin::{build_admin_router, ListenerMap};
 use rustyice_auth::TomlBcryptAuth;
 use rustyice_core::{
-    config::{self, Config},
+    config::{self, Config, TranscodeFormat},
     mount::{ActiveMount, MountInfo, MountMetadata, MountRegistry},
     types::CodecId,
 };
@@ -82,6 +82,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Shared state ────────────────────────────────────────────────────────
     let shutdown = CancellationToken::new();
+
+    // ── AutoDJs ────────────────────────────────────────────────────────────
+    let mut autodj_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    for ac in &cfg.autodjs {
+        let bus = Arc::new(TokioBroadcastBus::new(
+            cfg.limits.ring_size,
+            ac.burst_size.unwrap_or(cfg.limits.burst_size) as usize,
+        ));
+        let codec_seed = match ac.transcode.format {
+            TranscodeFormat::Mp3 => CodecId::MP3,
+            TranscodeFormat::Vorbis => CodecId::VORBIS,
+        };
+        let mount = Arc::new(ActiveMount::new(
+            MountInfo {
+                path: ac.mount.clone(),
+                codec: codec_seed,
+                // No live ingest is allowed via password on autodj-only paths.
+                // (Live sources still preempt via the autodj-slot mechanism.)
+                source_password: String::new(),
+                max_listeners: ac.max_listeners,
+                metadata: MountMetadata {
+                    name: ac.name.clone(),
+                    description: ac.description.clone(),
+                    genre: ac.genre.clone(),
+                    url: ac.url.clone(),
+                },
+            },
+            bus,
+        ));
+        mounts.add(mount.clone());
+        info!(mount = %ac.mount, enabled = ac.enabled, "registered autodj mount");
+        if ac.enabled {
+            let player = rustyice_autodj::AutoDjPlayer::from_config(ac, mount, shutdown.clone());
+            autodj_handles.push(player.spawn());
+        }
+    }
+    let _autodj_handles = autodj_handles; // keep alive until main exits
+
     let listeners = ListenerMap::new();
     let shared_cfg = Arc::new(ArcSwap::from_pointee(cfg.clone()));
     let auth = Arc::new(TomlBcryptAuth::new(&cfg));
