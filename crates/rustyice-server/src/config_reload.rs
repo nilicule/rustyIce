@@ -12,6 +12,7 @@ pub async fn watch_sighup(
     config: Arc<ArcSwap<Config>>,
     auth: Arc<dyn AuthBackend + Send + Sync>,
     mounts: MountRegistry,
+    autodjs: Arc<AutoDjRegistry>,
     shutdown: CancellationToken,
 ) {
     #[cfg(unix)]
@@ -29,7 +30,7 @@ pub async fn watch_sighup(
             tokio::select! {
                 _ = sighup.recv() => {
                     info!("SIGHUP received, reloading config from {}", config_path.display());
-                    do_reload(&config_path, &config, &auth, &mounts).await;
+                    do_reload(&config_path, &config, &auth, &mounts, &autodjs, &shutdown).await;
                 }
                 () = shutdown.cancelled() => {
                     info!("config reload task shutting down");
@@ -50,6 +51,8 @@ async fn do_reload(
     config: &Arc<ArcSwap<Config>>,
     auth: &Arc<dyn AuthBackend + Send + Sync>,
     mounts: &MountRegistry,
+    autodjs: &Arc<AutoDjRegistry>,
+    shutdown: &CancellationToken,
 ) {
     let new_cfg = match rustyice_core::config::load(path) {
         Ok(c) => c,
@@ -94,8 +97,147 @@ async fn do_reload(
         }
     }
 
+    // ── AutoDJ diff ────────────────────────────────────────────────────────
+    let old_cfg = config.load_full();
+    let new_paths: std::collections::HashSet<&str> =
+        new_cfg.autodjs.iter().map(|a| a.mount.as_str()).collect();
+
+    // Removed entries: cancel + drop mount.
+    for old in &old_cfg.autodjs {
+        if !new_paths.contains(old.mount.as_str()) {
+            autodjs.cancel(&old.mount).await;
+            let _ = mounts.remove(&old.mount);
+            info!(mount = %old.mount, "autodj removed via SIGHUP");
+        }
+    }
+
+    // New entries, and respawn-required changes.
+    for new in &new_cfg.autodjs {
+        let old = old_cfg.autodjs.iter().find(|a| a.mount == new.mount);
+        let needs_respawn = match old {
+            None => new.enabled,
+            Some(o) => {
+                o.enabled != new.enabled
+                    || o.folder != new.folder
+                    || o.loop_playlist != new.loop_playlist
+                    || o.order != new.order
+                    || o.transcode != new.transcode
+                    || o.burst_size != new.burst_size
+            }
+        };
+
+        if needs_respawn {
+            autodjs.cancel(&new.mount).await;
+
+            // Ensure mount exists; if not, register it now (new entry).
+            if mounts.get(&new.mount).is_none() {
+                let bus = Arc::new(crate::bus::TokioBroadcastBus::new(
+                    new_cfg.limits.ring_size,
+                    new.burst_size.unwrap_or(new_cfg.limits.burst_size) as usize,
+                ));
+                let codec_seed = match new.transcode.format {
+                    rustyice_core::config::TranscodeFormat::Mp3 => {
+                        rustyice_core::types::CodecId::MP3
+                    }
+                    rustyice_core::config::TranscodeFormat::Vorbis => {
+                        rustyice_core::types::CodecId::VORBIS
+                    }
+                };
+                mounts.add(Arc::new(rustyice_core::mount::ActiveMount::new(
+                    rustyice_core::mount::MountInfo {
+                        path: new.mount.clone(),
+                        codec: codec_seed,
+                        source_password: String::new(),
+                        max_listeners: new.max_listeners,
+                        metadata: rustyice_core::mount::MountMetadata {
+                            name: new.name.clone(),
+                            description: new.description.clone(),
+                            genre: new.genre.clone(),
+                            url: new.url.clone(),
+                        },
+                    },
+                    bus,
+                )));
+            }
+
+            if new.enabled {
+                if let Some(mount) = mounts.get(&new.mount) {
+                    let cancel = shutdown.child_token();
+                    let player =
+                        rustyice_autodj::AutoDjPlayer::from_config(new, mount, cancel.clone());
+                    let handle = player.spawn();
+                    autodjs.insert(new.clone(), cancel, handle).await;
+                    info!(mount = %new.mount, "autodj spawned via SIGHUP");
+                }
+            } else {
+                info!(mount = %new.mount, "autodj disabled via SIGHUP");
+            }
+        } else {
+            // Metadata-only update: live-swap MountInfo.
+            if let Some(mount) = mounts.get(&new.mount) {
+                let old_info = mount.info.load_full();
+                let new_info = rustyice_core::mount::MountInfo {
+                    path: old_info.path.clone(),
+                    codec: old_info.codec.clone(),
+                    source_password: old_info.source_password.clone(),
+                    max_listeners: new.max_listeners,
+                    metadata: rustyice_core::mount::MountMetadata {
+                        name: new.name.clone(),
+                        description: new.description.clone(),
+                        genre: new.genre.clone(),
+                        url: new.url.clone(),
+                    },
+                };
+                mount.info.store(Arc::new(new_info));
+            }
+        }
+    }
+
     config.store(Arc::new(new_cfg));
     info!("config reloaded successfully");
+}
+
+use rustyice_core::config::AutoDjConfig;
+use std::collections::HashMap;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
+
+/// Live set of running AutoDJ tasks, keyed by mount path. Shared between
+/// `main` (initial spawn) and the SIGHUP reloader (diff + respawn).
+#[derive(Default)]
+pub struct AutoDjRegistry {
+    inner: AsyncMutex<HashMap<String, AutoDjEntry>>,
+}
+
+struct AutoDjEntry {
+    #[allow(dead_code)]
+    cfg: AutoDjConfig,
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl AutoDjRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn insert(
+        &self,
+        cfg: AutoDjConfig,
+        cancel: CancellationToken,
+        handle: JoinHandle<()>,
+    ) {
+        let mut g = self.inner.lock().await;
+        g.insert(cfg.mount.clone(), AutoDjEntry { cfg, cancel, handle });
+    }
+
+    pub async fn cancel(&self, mount: &str) {
+        let entry = { self.inner.lock().await.remove(mount) };
+        if let Some(e) = entry {
+            e.cancel.cancel();
+            let _ = e.handle.await;
+        }
+    }
 }
 
 #[cfg(test)]

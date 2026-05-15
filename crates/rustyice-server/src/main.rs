@@ -84,7 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = CancellationToken::new();
 
     // ── AutoDJs ────────────────────────────────────────────────────────────
-    let mut autodj_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let autodj_registry =
+        Arc::new(rustyice_server::config_reload::AutoDjRegistry::new());
     for ac in &cfg.autodjs {
         let bus = Arc::new(TokioBroadcastBus::new(
             cfg.limits.ring_size,
@@ -114,11 +115,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mounts.add(mount.clone());
         info!(mount = %ac.mount, enabled = ac.enabled, "registered autodj mount");
         if ac.enabled {
-            let player = rustyice_autodj::AutoDjPlayer::from_config(ac, mount, shutdown.clone());
-            autodj_handles.push(player.spawn());
+            let cancel = shutdown.child_token();
+            let player =
+                rustyice_autodj::AutoDjPlayer::from_config(ac, mount.clone(), cancel.clone());
+            let handle = player.spawn();
+            autodj_registry.insert(ac.clone(), cancel, handle).await;
         }
     }
-    let _autodj_handles = autodj_handles; // keep alive until main exits
 
     let listeners = ListenerMap::new();
     let shared_cfg = Arc::new(ArcSwap::from_pointee(cfg.clone()));
@@ -160,13 +163,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only meaningful when a real config file backs the running config —
     // there's nothing to reload from when running on built-in defaults.
     if let ConfigSource::File(config_path) = &config_source {
-        let sighup_shutdown = shutdown.clone();
         tokio::spawn(watch_sighup(
             config_path.clone(),
             shared_cfg,
             auth,
             mounts,
-            sighup_shutdown,
+            autodj_registry.clone(),
+            shutdown.clone(),
         ));
     }
 
