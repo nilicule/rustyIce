@@ -294,6 +294,7 @@ mod tests {
             tls: None,
             transcode: None,
             autodjs: vec![],
+            relays: vec![],
         }
     }
 

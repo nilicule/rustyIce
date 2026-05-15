@@ -64,6 +64,7 @@ async fn build_test_server_with(
             transcode: None,
         }],
         autodjs: vec![],
+        relays: vec![],
         tls: None,
         transcode: None,
     };
@@ -181,6 +182,7 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
             transcode: None,
         }],
         autodjs: vec![],
+        relays: vec![],
         tls: None,
         transcode: None,
     };
@@ -612,6 +614,7 @@ async fn build_test_server_with_transcode_cfg(
             transcode: Some(transcode),
         }],
         autodjs: vec![],
+        relays: vec![],
         tls: None,
         transcode: None,
     };
@@ -1189,6 +1192,7 @@ async fn transcoding_overrides_source_bitrate_and_audio_info() {
             }),
         }],
         autodjs: vec![],
+        relays: vec![],
         tls: None,
         transcode: None,
     };
