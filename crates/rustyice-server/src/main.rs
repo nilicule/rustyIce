@@ -20,7 +20,7 @@ use rustyice_core::{
 };
 use rustyice_ingest::IcecastIngest;
 use rustyice_output::HttpPassthroughOutput;
-use std::{path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -34,9 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    print_banner();
-
     let (cfg, config_source) = load_or_default_config()?;
+
+    print_banner(cfg.server.admin_bind);
 
     setup_tracing(&cfg);
 
@@ -268,21 +268,37 @@ fn print_defaults_notice(creds: &GeneratedCreds) {
 /// Print a startup banner. Skipped when stdout is not a TTY (e.g. piped to a
 /// log collector) so structured-log consumers aren't fed ASCII art. Honors
 /// `NO_COLOR` per <https://no-color.org/>.
-fn print_banner() {
+fn print_banner(admin_bind: SocketAddr) {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
         return;
     }
-    let (cyan, dim, reset) = if std::env::var_os("NO_COLOR").is_none() {
+    let color = std::env::var_os("NO_COLOR").is_none();
+    let (cyan, dim, reset) = if color {
         ("\x1b[38;2;74;144;226m", "\x1b[2m", "\x1b[0m")
     } else {
         ("", "", "")
     };
-    println!("\n{cyan}{logo}{reset}", logo = banner::LOGO);
-    println!(
-        "{dim}icecast-compatible mp3 streaming · pure rust · v{}{reset}\n",
+
+    let tagline = format!(
+        "icecast-compatible streaming · pure rust · v{}",
         env!("CARGO_PKG_VERSION")
     );
+    let admin_url = banner::admin_url(admin_bind);
+    let admin_label = format!("admin: {admin_url}");
+
+    let tagline_pad = " ".repeat(banner::center_pad(tagline.chars().count(), banner::LOGO_WIDTH));
+    let admin_pad = " ".repeat(banner::center_pad(admin_label.chars().count(), banner::LOGO_WIDTH));
+
+    let admin_rendered = if color {
+        banner::hyperlink(&admin_url, &admin_label)
+    } else {
+        admin_label
+    };
+
+    println!("\n{cyan}{logo}{reset}", logo = banner::LOGO);
+    println!("{tagline_pad}{dim}{tagline}{reset}");
+    println!("{admin_pad}{cyan}{admin_rendered}{reset}\n");
 }
 
 fn setup_tracing(cfg: &Config) {
