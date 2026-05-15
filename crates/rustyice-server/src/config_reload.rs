@@ -14,6 +14,7 @@ pub async fn watch_sighup(
     mounts: MountRegistry,
     autodjs: Arc<AutoDjRegistry>,
     relays: Arc<RelayRegistry>,
+    app_state: crate::state::AppState,
     shutdown: CancellationToken,
 ) {
     #[cfg(unix)]
@@ -31,7 +32,7 @@ pub async fn watch_sighup(
             tokio::select! {
                 _ = sighup.recv() => {
                     info!("SIGHUP received, reloading config from {}", config_path.display());
-                    do_reload(&config_path, &config, &auth, &mounts, &autodjs, &relays, &shutdown).await;
+                    do_reload(&config_path, &config, &auth, &mounts, &autodjs, &relays, &app_state, &shutdown).await;
                 }
                 () = shutdown.cancelled() => {
                     info!("config reload task shutting down");
@@ -53,7 +54,8 @@ async fn do_reload(
     auth: &Arc<dyn AuthBackend + Send + Sync>,
     mounts: &MountRegistry,
     autodjs: &Arc<AutoDjRegistry>,
-    _relays: &Arc<RelayRegistry>,
+    relays: &Arc<RelayRegistry>,
+    app_state: &crate::state::AppState,
     shutdown: &CancellationToken,
 ) {
     let new_cfg = match rustyice_core::config::load(path) {
@@ -173,6 +175,94 @@ async fn do_reload(
                 }
             } else {
                 info!(mount = %new.mount, "autodj disabled via SIGHUP");
+            }
+        } else {
+            // Metadata-only update: live-swap MountInfo.
+            if let Some(mount) = mounts.get(&new.mount) {
+                let old_info = mount.info.load_full();
+                let new_info = rustyice_core::mount::MountInfo {
+                    path: old_info.path.clone(),
+                    codec: old_info.codec.clone(),
+                    source_password: old_info.source_password.clone(),
+                    max_listeners: new.max_listeners,
+                    metadata: rustyice_core::mount::MountMetadata {
+                        name: new.name.clone(),
+                        description: new.description.clone(),
+                        genre: new.genre.clone(),
+                        url: new.url.clone(),
+                    },
+                };
+                mount.info.store(Arc::new(new_info));
+            }
+        }
+    }
+
+    // ── Relay diff ─────────────────────────────────────────────────────────
+    let new_relay_paths: std::collections::HashSet<&str> =
+        new_cfg.relays.iter().map(|r| r.mount.as_str()).collect();
+
+    for old in &old_cfg.relays {
+        if !new_relay_paths.contains(old.mount.as_str()) {
+            relays.cancel(&old.mount).await;
+            let _ = mounts.remove(&old.mount);
+            info!(mount = %old.mount, "relay removed via SIGHUP");
+        }
+    }
+
+    for new in &new_cfg.relays {
+        let old = old_cfg.relays.iter().find(|r| r.mount == new.mount);
+        let needs_respawn = match old {
+            None => new.enabled,
+            Some(o) => {
+                o.enabled != new.enabled
+                    || o.upstream != new.upstream
+                    || o.username != new.username
+                    || o.password != new.password
+                    || o.transcode != new.transcode
+                    || o.burst_size != new.burst_size
+            }
+        };
+
+        if needs_respawn {
+            relays.cancel(&new.mount).await;
+
+            if mounts.get(&new.mount).is_none() {
+                let bus = Arc::new(crate::bus::TokioBroadcastBus::new(
+                    new_cfg.limits.ring_size,
+                    new.burst_size.unwrap_or(new_cfg.limits.burst_size) as usize,
+                ));
+                mounts.add(Arc::new(rustyice_core::mount::ActiveMount::new(
+                    rustyice_core::mount::MountInfo {
+                        path: new.mount.clone(),
+                        codec: rustyice_core::types::CodecId::MP3,
+                        source_password: String::new(),
+                        max_listeners: new.max_listeners,
+                        metadata: rustyice_core::mount::MountMetadata {
+                            name: new.name.clone(),
+                            description: new.description.clone(),
+                            genre: new.genre.clone(),
+                            url: new.url.clone(),
+                        },
+                    },
+                    bus,
+                )));
+            }
+
+            if new.enabled {
+                if let Some(mount) = mounts.get(&new.mount) {
+                    let cancel = shutdown.child_token();
+                    let task = crate::relay::RelayTask::from_config(
+                        new.clone(),
+                        mount,
+                        app_state.clone(),
+                        cancel.clone(),
+                    );
+                    let handle = task.spawn();
+                    relays.insert(new.clone(), cancel, handle).await;
+                    info!(mount = %new.mount, "relay spawned via SIGHUP");
+                }
+            } else {
+                info!(mount = %new.mount, "relay disabled via SIGHUP");
             }
         } else {
             // Metadata-only update: live-swap MountInfo.

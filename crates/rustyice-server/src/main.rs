@@ -212,6 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             mounts,
             autodj_registry.clone(),
             relay_registry.clone(),
+            app_state.clone(),
             shutdown.clone(),
         ));
     }
