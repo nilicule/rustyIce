@@ -107,6 +107,27 @@
 
       <div id="mount-detail" class="admin-mounts"></div>
     </section>
+
+    <!-- ============== Public stream detail view ============== -->
+    <section id="view-stream-detail" class="view hidden">
+      <div class="admin-header">
+        <div>
+          <p class="eyebrow"><a href="#" class="back-link">← ALL STREAMS</a></p>
+          <h2 class="admin-title" id="stream-detail-title">—</h2>
+        </div>
+      </div>
+
+      <div class="stream-player">
+        <button type="button" id="stream-play-btn" class="player-btn" disabled>
+          <span class="player-btn-icon" id="stream-play-icon">▶</span>
+          <span class="player-btn-label" id="stream-play-label">PLAY</span>
+        </button>
+        <span class="player-status" id="stream-player-status">—</span>
+        <audio id="stream-audio" preload="none"></audio>
+      </div>
+
+      <div id="stream-meta" class="stream-meta-grid"></div>
+    </section>
   </main>
 
   <footer class="footer">
