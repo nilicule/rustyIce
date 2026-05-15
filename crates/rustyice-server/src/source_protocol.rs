@@ -151,23 +151,6 @@ pub async fn handle_source_connection(
         "source connected"
     );
 
-    // RFC-compliant clients (butt, ezstream, …) wait for `100 Continue` before
-    // streaming audio. hyper does not auto-respond to this in 1.x, so we must.
-    let expects_continue = headers
-        .get(header::EXPECT)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue"));
-    if expects_continue {
-        if let Err(e) = write_half.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await {
-            warn!("failed sending 100 Continue to {peer_addr}: {e}");
-            return Ok(());
-        }
-        if let Err(e) = write_half.flush().await {
-            warn!("failed flushing 100 Continue to {peer_addr}: {e}");
-            return Ok(());
-        }
-    }
-
     // Respect Content-Length if the client provided one (curl, reqwest, …).
     // Without it, read until the client closes — that's how Icecast clients
     // signal end-of-stream.
@@ -175,6 +158,53 @@ pub async fn handle_source_connection(
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
+
+    // Reply *before* the body so the client knows to start streaming. Three
+    // flavours, ordered most-specific first:
+    //
+    //   - `Expect: 100-continue` (butt, ezstream, …): reply with
+    //     `HTTP/1.1 100 Continue`. They send the body after.
+    //
+    //   - Classic Icecast-2 source clients (libshout 2.x via Mixxx, EdCast,
+    //     older Liquidsoap, …): no `Expect`, no `Content-Length`, no
+    //     `Transfer-Encoding: chunked` — they sit in `SHOUT_STATE_RESP`
+    //     until they read a successful status line. Reply with
+    //     `HTTP/1.0 200 OK` upfront; without it they never transmit audio.
+    //
+    //   - Conventional HTTP clients with body framing (reqwest, curl, …):
+    //     skip the upfront response. They've already started streaming the
+    //     body; we read it and emit a normal final 200 OK after.
+    //
+    // Real Icecast 2 replies immediately after auth for the first two cases.
+    // hyper does not auto-respond to `100-continue` in 1.x, and obviously
+    // won't make up an upfront 200, so we do both by hand.
+    let expects_continue = headers
+        .get(header::EXPECT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue"));
+    let is_classic_icecast = !expects_continue
+        && content_length.is_none()
+        && headers
+            .get(header::TRANSFER_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .is_none_or(|v| !v.to_ascii_lowercase().contains("chunked"));
+    let upfront_response: &[u8] = if expects_continue {
+        b"HTTP/1.1 100 Continue\r\n\r\n"
+    } else if is_classic_icecast {
+        b"HTTP/1.0 200 OK\r\n\r\n"
+    } else {
+        b""
+    };
+    if !upfront_response.is_empty() {
+        if let Err(e) = write_half.write_all(upfront_response).await {
+            warn!("failed sending upfront response to {peer_addr}: {e}");
+            return Ok(());
+        }
+        if let Err(e) = write_half.flush().await {
+            warn!("failed flushing upfront response to {peer_addr}: {e}");
+            return Ok(());
+        }
+    }
 
     let chained = ChainReader::new(leftover, read_half);
     // Wrap so every byte read from the network is reflected in
@@ -205,10 +235,13 @@ pub async fn handle_source_connection(
         Err(IngestError::MountBusy) => debug!("source mount busy: mount={mount_path}"),
     }
 
-    // Best-effort 200; the peer has likely already closed by now (which is
-    // expected for streaming sources), in which case the write errors and we
-    // silently move on.
-    let _ = write_status(&mut write_half, 200, "OK").await;
+    // Terminal 200 OK only when we haven't already sent one upfront. For
+    // classic-Icecast clients we wrote `HTTP/1.0 200 OK` before reading the
+    // body; sending a second status line now would either corrupt the
+    // connection or (more typically) fail because the peer already closed.
+    if !is_classic_icecast {
+        let _ = write_status(&mut write_half, 200, "OK").await;
+    }
     let _ = write_half.shutdown().await;
     Ok(())
 }
