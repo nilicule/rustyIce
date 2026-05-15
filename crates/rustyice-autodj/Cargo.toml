@@ -1,0 +1,23 @@
+[package]
+name = "rustyice-autodj"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustyice-core      = { path = "../rustyice-core" }
+rustyice-codec     = { path = "../rustyice-codec" }
+rustyice-transcode = { path = "../rustyice-transcode" }
+arc-swap.workspace   = true
+bytes.workspace      = true
+tokio                = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tokio-util.workspace = true
+tracing.workspace    = true
+symphonia.workspace  = true
+rubato.workspace     = true
+lofty.workspace      = true
+walkdir.workspace    = true
+rand.workspace       = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio              = { workspace = true, features = ["full"] }
