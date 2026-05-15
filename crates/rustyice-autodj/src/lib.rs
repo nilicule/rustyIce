@@ -13,3 +13,4 @@ pub use tags::display_title;
 
 pub mod player;
 pub use player::play_track;
+pub use player::AutoDjPlayer;
