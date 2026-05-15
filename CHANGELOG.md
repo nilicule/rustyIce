@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Suppress `symphonia_metadata` INFO noise from the default logger so AutoDJ folders with tagged audio no longer flood the console with `unsupported frame GEOB` (and similar) lines. 
+- Suppress `symphonia_metadata` INFO noise from the default logger so AutoDJ folders with tagged audio no longer flood the console with `unsupported frame GEOB` (and similar) lines.
+- Live sources can now preempt an AutoDJ or Relay on a mount that has no `[[mounts]]` entry of its own. `verify_source` falls back to the global `[auth].source_password` when no per-mount password is configured — previously such PUTs were always rejected with `401`, so the live-source preemption promised by the AutoDJ feature never actually worked.
 
 ## [0.2.0] - 2026-05-15
 
