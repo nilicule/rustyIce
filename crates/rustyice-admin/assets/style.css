@@ -525,27 +525,89 @@ a.stream-row:hover .stream-path::before {
   letter-spacing: .1em;
   color: var(--fg-muted);
 }
-.stream-meta-grid {
+/* visualizer — decorative frequency bars in the player block */
+.viz {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 1;
+  min-width: 80px;
+  height: 40px;
+  opacity: .3;
+  transition: opacity 200ms ease;
+}
+.viz.active { opacity: 1; }
+.viz-bar {
+  flex: 1;
+  height: 100%;
+  transform: scaleY(0.05);
+  transform-origin: bottom;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(to top, var(--accent), var(--accent-2));
+}
+
+/* now-playing card */
+.np-card {
   background: var(--bg-elev);
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
+  padding: 1.5rem 1.75rem;
 }
-.stream-meta-row {
-  display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
-  gap: 1rem;
-  align-items: baseline;
-  padding: .8rem 1.25rem;
-  border-bottom: 1px solid var(--line-soft);
-}
-.stream-meta-row:last-child { border-bottom: none; }
-.stream-meta-value {
+.np-label {
   font-family: var(--mono);
-  font-size: .9rem;
-  color: var(--fg);
-  word-break: break-word;
+  font-size: .65rem;
+  letter-spacing: .2em;
+  color: var(--accent);
+  margin-bottom: .5rem;
 }
+.np-track {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  line-height: 1.25;
+  margin: 0 0 .4rem;
+}
+.np-desc {
+  font-family: var(--mono);
+  font-size: .85rem;
+  color: var(--fg-muted);
+  margin-bottom: 1rem;
+}
+.np-tags {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.1rem;
+}
+.np-chip {
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .12em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  padding: .2rem .6rem;
+  border-radius: 3px;
+}
+.np-spec {
+  font-family: var(--mono);
+  font-size: .8rem;
+  color: var(--fg-muted);
+}
+.np-stats {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  font-family: var(--mono);
+  font-size: .78rem;
+  letter-spacing: .1em;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--line-soft);
+  padding-top: 1rem;
+}
+.np-stats strong { color: var(--fg); font-weight: 600; }
+.np-sep { color: var(--fg-dim); }
 
 /* ─── footer ─────────────────────────────────────────────────────────── */
 .footer {
@@ -579,5 +641,4 @@ a.stream-row:hover .stream-path::before {
   }
   .mount-title-error { grid-column: 1; }
   .stream-player { flex-wrap: wrap; }
-  .stream-meta-row { grid-template-columns: 1fr; gap: .25rem; }
 }

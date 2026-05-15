@@ -66,6 +66,59 @@ function sampleBandwidth(stats) {
   };
 }
 
+// ─── visualizer (decorative frequency bars) ────────────────────────────
+// Animated bars shown in the player block while audio plays. Purely
+// decorative — driven by layered sine motion, not the actual audio signal.
+const viz = {
+  bars: [],
+  raf: null,
+  container: null,
+
+  // Build the bar elements once and cache the container.
+  init() {
+    if (this.container) return;
+    this.container = $('stream-viz');
+    if (!this.container) return;
+    for (let i = 0; i < 32; i++) {
+      const el = document.createElement('span');
+      el.className = 'viz-bar';
+      el.style.transform = 'scaleY(0.05)';
+      this.container.appendChild(el);
+      this.bars.push({ el, value: 0.05, phase: Math.random() * Math.PI * 2 });
+    }
+  },
+
+  start() {
+    this.init();
+    if (!this.container || this.raf) return;
+    this.container.classList.add('active');
+    const t0 = performance.now();
+    const tick = (now) => {
+      const t = (now - t0) / 1000;
+      for (let i = 0; i < this.bars.length; i++) {
+        const b = this.bars[i];
+        // Layered sines give a rhythmic, music-like sway rather than noise.
+        const sway = 0.5 + 0.42 * Math.sin(t * 3 + b.phase);
+        const flicker = 0.22 * Math.sin(t * 11 + i) * Math.random();
+        const target = Math.min(1, Math.max(0.06, sway + flicker));
+        b.value += (target - b.value) * 0.28;   // ease toward the target
+        b.el.style.transform = `scaleY(${b.value.toFixed(3)})`;
+      }
+      this.raf = requestAnimationFrame(tick);
+    };
+    this.raf = requestAnimationFrame(tick);
+  },
+
+  stop() {
+    if (this.raf) { cancelAnimationFrame(this.raf); this.raf = null; }
+    if (this.container) this.container.classList.remove('active');
+    for (const b of this.bars) {
+      b.value = 0.05;
+      b.el.style.transform = 'scaleY(0.05)';
+    }
+  },
+};
+
 // ─── stream player (public detail view) ────────────────────────────────
 // Drives the hidden <audio> element on the stream-detail page. Owns all
 // playback state so metadata polling can refresh freely without touching it.
@@ -88,6 +141,7 @@ const streamPlayer = {
           this.playing = false;
           this.render();
           this.setStatus('playback error');
+          viz.stop();
         }
       });
     }
@@ -123,10 +177,12 @@ const streamPlayer = {
     this.playing = true;
     this.render();
     this.setStatus('connecting…');
+    viz.start();
     a.play().catch(() => {
       this.playing = false;
       this.render();
       this.setStatus('playback error');
+      viz.stop();
     });
   },
 
@@ -140,6 +196,7 @@ const streamPlayer = {
     a.load();           // actually drop the Icecast connection, not just buffer
     this.render();
     this.setStatus('ready');
+    viz.stop();
   },
 
   // Stop playback and forget the mount — called on every navigation.
@@ -152,6 +209,7 @@ const streamPlayer = {
     }
     this.url = null;
     this.offline = false;
+    viz.stop();
   },
 
   render() {
@@ -384,30 +442,56 @@ async function refreshStreamDetail() {
     if (streamPlayer.url !== url) streamPlayer.attach(url);
     streamPlayer.setOffline(false);
 
-    $('stream-meta').innerHTML = renderStreamMeta(mount);
+    $('stream-meta').innerHTML = renderStreamCard(mount);
   } catch (e) {
     console.error('stream detail refresh failed', e);
   }
 }
 
-function renderStreamMeta(m) {
-  const rows = [
-    ['NOW PLAYING', m.title || '—'],
-    ['NAME', m.name || '—'],
-    ['DESCRIPTION', m.description || '—'],
-    ['GENRE', m.genre || '—'],
-    ['CODEC', m.codec],
-    ['BITRATE', m.bitrate_kbps ? `${m.bitrate_kbps} kbps` : '—'],
-    ['LISTENERS', String(m.listener_count)],
-    ['UPTIME', fmtUptime(m.source_uptime_secs)],
-  ];
-  if (m.audio_info) rows.push(['AUDIO INFO', m.audio_info]);
-  return rows.map(([label, value]) => `
-    <div class="stream-meta-row">
-      <span class="mount-field-label">${label}</span>
-      <span class="stream-meta-value">${escapeHtml(value)}</span>
+// Parse an ICE `audio_info` string ("samplerate=44100;channels=2;...") into
+// a flat key/value object.
+function parseAudioInfo(s) {
+  const out = {};
+  if (!s) return out;
+  for (const part of s.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0) out[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+// One-line technical spec, e.g. "mp3 · 128 kbps · 44.1 kHz · stereo".
+function streamSpec(m) {
+  const ai = parseAudioInfo(m.audio_info);
+  const parts = [m.codec];
+  const br = m.bitrate_kbps || (ai.bitrate ? Number(ai.bitrate) : null);
+  if (br) parts.push(`${br} kbps`);
+  if (ai.samplerate) parts.push(`${Number(ai.samplerate) / 1000} kHz`);
+  if (ai.channels) parts.push(Number(ai.channels) === 1 ? 'mono' : 'stereo');
+  return parts.join(' · ');
+}
+
+function renderStreamCard(m) {
+  const desc = m.description
+    ? `<div class="np-desc">${escapeHtml(m.description)}</div>` : '';
+  const chip = m.genre
+    ? `<span class="np-chip">${escapeHtml(m.genre)}</span>` : '';
+  return `
+    <div class="np-card">
+      <div class="np-label">NOW PLAYING</div>
+      <div class="np-track">${escapeHtml(m.title || '—')}</div>
+      ${desc}
+      <div class="np-tags">
+        ${chip}
+        <span class="np-spec">${escapeHtml(streamSpec(m))}</span>
+      </div>
+      <div class="np-stats">
+        <span><strong>${m.listener_count}</strong> LISTENERS</span>
+        <span class="np-sep">·</span>
+        <span>UP <strong>${escapeHtml(fmtUptime(m.source_uptime_secs))}</strong></span>
+      </div>
     </div>
-  `).join('');
+  `;
 }
 
 // ─── mount card rendering ──────────────────────────────────────────────
