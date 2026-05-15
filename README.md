@@ -8,6 +8,7 @@ A single-binary Icecast-compatible streaming server written in Rust, supporting 
 - MP3 and Ogg Vorbis streaming with automatic bitrate detection and real-time pacing
 - Burst-on-connect — new listeners get an immediate prefill of recent audio (Icecast-compatible `burst_size`, default 64 KiB, per-mount override)
 - **Transcoding** — decode/re-encode to a consistent output; per-mount or global, passthrough when unset. Any combination of MP3 / Ogg Vorbis source and MP3 / Ogg Vorbis target.
+- **AutoDJ** — auto-rotate a folder of MP3 / Ogg Vorbis files on a mount, with shuffle or sequential ordering, per-track ICY titles from file tags, and preemption by live Icecast sources
 - Per-mount source passwords, plus an optional global password for dynamic mounts
 - Public landing page with one-click playback
 - Admin dashboard + REST API — kick-source / kick-listener, per-mount listener detail, Prometheus `/metrics`
