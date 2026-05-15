@@ -8,6 +8,7 @@ use rustyice_server::{
     stream_listener::{PeerAddr, StreamListener},
     stream_router::build_stream_router,
 };
+use rustyice_server::banner;
 
 use arc_swap::ArcSwap;
 use rustyice_admin::{build_admin_router, ListenerMap};
@@ -264,14 +265,6 @@ fn print_defaults_notice(creds: &GeneratedCreds) {
     );
 }
 
-const BANNER_ART: &str = "\
-██████╗ ██╗   ██╗███████╗████████╗██╗   ██╗██╗ ██████╗███████╗
-██╔══██╗██║   ██║██╔════╝╚══██╔══╝╚██╗ ██╔╝██║██╔════╝██╔════╝
-██████╔╝██║   ██║███████╗   ██║    ╚████╔╝ ██║██║     █████╗
-██╔══██╗██║   ██║╚════██║   ██║     ╚██╔╝  ██║██║     ██╔══╝
-██║  ██║╚██████╔╝███████║   ██║      ██║   ██║╚██████╗███████╗
-╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝      ╚═╝   ╚═╝ ╚═════╝╚══════╝";
-
 /// Print a startup banner. Skipped when stdout is not a TTY (e.g. piped to a
 /// log collector) so structured-log consumers aren't fed ASCII art. Honors
 /// `NO_COLOR` per <https://no-color.org/>.
@@ -285,7 +278,7 @@ fn print_banner() {
     } else {
         ("", "", "")
     };
-    println!("\n{cyan}{BANNER_ART}{reset}");
+    println!("\n{cyan}{logo}{reset}", logo = banner::LOGO);
     println!(
         "{dim}icecast-compatible mp3 streaming · pure rust · v{}{reset}\n",
         env!("CARGO_PKG_VERSION")

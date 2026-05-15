@@ -1,5 +1,6 @@
 #![warn(clippy::pedantic)]
 
+pub mod banner;
 pub mod bus;
 pub mod config_reload;
 pub mod shutdown;
