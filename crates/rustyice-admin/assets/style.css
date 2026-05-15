@@ -525,11 +525,9 @@ a.stream-row:hover .stream-path::before {
   letter-spacing: .1em;
   color: var(--fg-muted);
 }
-/* visualizer — decorative frequency bars in the player block */
+/* visualizer — real-time bars / oscilloscope in the player block */
 .viz {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
+  position: relative;
   flex: 1;
   min-width: 80px;
   height: 40px;
@@ -537,6 +535,12 @@ a.stream-row:hover .stream-path::before {
   transition: opacity 200ms ease;
 }
 .viz.active { opacity: 1; }
+.viz-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 100%;
+}
 .viz-bar {
   flex: 1;
   height: 100%;
@@ -545,6 +549,29 @@ a.stream-row:hover .stream-path::before {
   border-radius: 2px 2px 0 0;
   background: linear-gradient(to top, var(--accent), var(--accent-2));
 }
+.viz-line { display: block; width: 100%; height: 100%; }
+
+/* bars / line mode toggle */
+.viz-toggle {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.viz-toggle button {
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: .68rem;
+  letter-spacing: .12em;
+  padding: .4rem .7rem;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.viz-toggle button.active { background: var(--accent-soft); color: var(--accent); }
+.viz-toggle button:not(.active):hover { color: var(--fg); }
 
 /* now-playing card */
 .np-card {

@@ -66,44 +66,85 @@ function sampleBandwidth(stats) {
   };
 }
 
-// ─── visualizer (decorative frequency bars) ────────────────────────────
-// Animated bars shown in the player block while audio plays. Purely
-// decorative — driven by layered sine motion, not the actual audio signal.
+// ─── visualizer (real-time bars / oscilloscope) ────────────────────────
+// Renders the live audio in the player block via the Web Audio API. Two
+// modes: `bars` (frequency spectrum) and `line` (time-domain waveform).
+// Falls back to synthetic motion if Web Audio is unavailable.
+const BAR_COUNT = 32;
 const viz = {
   bars: [],
   raf: null,
-  container: null,
+  ready: false,
+  mode: 'bars',
+  lineColor: '#4dabff',
+  el: null, barsEl: null, canvas: null, ctx2d: null,
+  actx: null, analyser: null, source: null,
+  freqData: null, timeData: null, hasAudio: false,
 
-  // Build the bar elements once and cache the container.
-  init() {
-    if (this.container) return;
-    this.container = $('stream-viz');
-    if (!this.container) return;
-    for (let i = 0; i < 32; i++) {
-      const el = document.createElement('span');
-      el.className = 'viz-bar';
-      el.style.transform = 'scaleY(0.05)';
-      this.container.appendChild(el);
-      this.bars.push({ el, value: 0.05, phase: Math.random() * Math.PI * 2 });
+  // Grab DOM nodes and build the bar elements once (idempotent).
+  ensureEls() {
+    if (this.ready) return;
+    this.el = $('stream-viz');
+    this.barsEl = $('viz-bars');
+    this.canvas = $('viz-line');
+    if (!this.el || !this.barsEl || !this.canvas) return;
+    this.ctx2d = this.canvas.getContext('2d');
+    this.lineColor = getComputedStyle(document.documentElement)
+      .getPropertyValue('--accent').trim() || '#4dabff';
+    for (let i = 0; i < BAR_COUNT; i++) {
+      const b = document.createElement('span');
+      b.className = 'viz-bar';
+      b.style.transform = 'scaleY(0.05)';
+      this.barsEl.appendChild(b);
+      this.bars.push(b);
+    }
+    this.ready = true;
+  },
+
+  // Build the Web Audio graph once: media element → analyser → output.
+  ensureAudio() {
+    if (this.analyser) { this.hasAudio = true; return; }
+    if (!window.AudioContext) { this.hasAudio = false; return; }
+    try {
+      this.actx = new AudioContext();
+      this.source = this.actx.createMediaElementSource($('stream-audio'));
+      this.analyser = this.actx.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.source.connect(this.analyser);
+      this.analyser.connect(this.actx.destination);
+      this.freqData = new Uint8Array(this.analyser.frequencyBinCount);
+      this.timeData = new Uint8Array(this.analyser.fftSize);
+      this.hasAudio = true;
+    } catch {
+      this.hasAudio = false;   // tainted/unsupported — synthetic fallback
     }
   },
 
+  setMode(mode) {
+    if (mode !== 'bars' && mode !== 'line') return;
+    this.ensureEls();
+    if (!this.ready) return;
+    this.mode = mode;
+    this.barsEl.classList.toggle('hidden', mode !== 'bars');
+    this.canvas.classList.toggle('hidden', mode !== 'line');
+    for (const btn of document.querySelectorAll('#viz-toggle [data-viz-mode]')) {
+      btn.classList.toggle('active', btn.dataset.vizMode === mode);
+    }
+    if (mode === 'bars') this.resetBars();
+    else if (!this.raf) this.drawLine();   // paint a static frame when idle
+  },
+
   start() {
-    this.init();
-    if (!this.container || this.raf) return;
-    this.container.classList.add('active');
+    this.ensureEls();
+    if (!this.ready) return;
+    this.ensureAudio();
+    if (this.actx && this.actx.state === 'suspended') this.actx.resume();
+    if (this.raf) return;
+    this.el.classList.add('active');
     const t0 = performance.now();
     const tick = (now) => {
-      const t = (now - t0) / 1000;
-      for (let i = 0; i < this.bars.length; i++) {
-        const b = this.bars[i];
-        // Layered sines give a rhythmic, music-like sway rather than noise.
-        const sway = 0.5 + 0.42 * Math.sin(t * 3 + b.phase);
-        const flicker = 0.22 * Math.sin(t * 11 + i) * Math.random();
-        const target = Math.min(1, Math.max(0.06, sway + flicker));
-        b.value += (target - b.value) * 0.28;   // ease toward the target
-        b.el.style.transform = `scaleY(${b.value.toFixed(3)})`;
-      }
+      if (this.mode === 'line') this.drawLine();
+      else this.drawBars((now - t0) / 1000);
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
@@ -111,11 +152,66 @@ const viz = {
 
   stop() {
     if (this.raf) { cancelAnimationFrame(this.raf); this.raf = null; }
-    if (this.container) this.container.classList.remove('active');
-    for (const b of this.bars) {
-      b.value = 0.05;
-      b.el.style.transform = 'scaleY(0.05)';
+    if (this.el) this.el.classList.remove('active');
+    if (!this.ready) return;
+    this.resetBars();
+    if (this.mode === 'line') this.drawLine();   // settle to a flat line
+  },
+
+  resetBars() {
+    for (const b of this.bars) b.style.transform = 'scaleY(0.05)';
+  },
+
+  drawBars(t) {
+    if (this.hasAudio) {
+      this.analyser.getByteFrequencyData(this.freqData);
+      // Music energy sits low in the spectrum — map the bars over the
+      // bottom three-quarters of the bins so the top isn't dead space.
+      const per = Math.max(1, Math.floor((this.freqData.length * 0.75) / BAR_COUNT));
+      for (let i = 0; i < BAR_COUNT; i++) {
+        let sum = 0;
+        for (let j = 0; j < per; j++) sum += this.freqData[i * per + j] || 0;
+        const v = Math.max(0.05, sum / per / 255);
+        this.bars[i].style.transform = `scaleY(${v.toFixed(3)})`;
+      }
+    } else {
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const v = Math.max(0.06, 0.5 + 0.42 * Math.sin(t * 3 + i * 0.5));
+        this.bars[i].style.transform = `scaleY(${v.toFixed(3)})`;
+      }
     }
+  },
+
+  drawLine() {
+    const cv = this.canvas, ctx = this.ctx2d;
+    if (!cv || !ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = this.lineColor;
+    ctx.beginPath();
+    if (this.hasAudio && this.analyser) {
+      this.analyser.getByteTimeDomainData(this.timeData);
+      const len = this.timeData.length;
+      for (let i = 0; i < len; i++) {
+        const x = (i / (len - 1)) * w;
+        const y = (this.timeData[i] / 255) * h;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+    } else {
+      // flat baseline when there is no audio graph / nothing playing
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+    }
+    ctx.stroke();
   },
 };
 
@@ -742,6 +838,10 @@ async function doLogout(ev) {
 $('logout-btn').addEventListener('click', doLogout);
 $('detail-logout-btn').addEventListener('click', doLogout);
 $('stream-play-btn').addEventListener('click', () => streamPlayer.toggle());
+$('viz-toggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-viz-mode]');
+  if (btn) viz.setMode(btn.dataset.vizMode);
+});
 
 // ─── boot ──────────────────────────────────────────────────────────────
 window.addEventListener('hashchange', route);

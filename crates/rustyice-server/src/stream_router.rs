@@ -149,7 +149,10 @@ async fn listener_handler(
 
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type);
+        .header(header::CONTENT_TYPE, content_type)
+        // Allow the browser Web Audio API to analyse the stream cross-origin:
+        // the player UI is served from the admin port, not the stream port.
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
 
     if let Some(v) = &identity.name {
         builder = builder.header("icy-name", v);

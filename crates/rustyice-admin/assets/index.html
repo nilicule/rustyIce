@@ -123,8 +123,15 @@
           <span class="player-btn-label" id="stream-play-label">PLAY</span>
         </button>
         <span class="player-status" id="stream-player-status">—</span>
-        <div class="viz" id="stream-viz"></div>
-        <audio id="stream-audio" preload="none"></audio>
+        <div class="viz" id="stream-viz">
+          <div class="viz-bars" id="viz-bars"></div>
+          <canvas class="viz-line hidden" id="viz-line"></canvas>
+        </div>
+        <div class="viz-toggle" id="viz-toggle">
+          <button type="button" class="active" data-viz-mode="bars">BARS</button>
+          <button type="button" data-viz-mode="line">LINE</button>
+        </div>
+        <audio id="stream-audio" preload="none" crossorigin="anonymous"></audio>
       </div>
 
       <div id="stream-meta"></div>
