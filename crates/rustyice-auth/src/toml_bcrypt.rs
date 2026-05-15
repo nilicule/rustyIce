@@ -130,6 +130,7 @@ mod tests {
                 .collect(),
             tls: None,
             transcode: None,
+            autodjs: vec![],
         }
     }
 

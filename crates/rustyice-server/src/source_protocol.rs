@@ -281,6 +281,32 @@ async fn read_request_head<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<P
 
 // ── Auth + mount resolution ────────────────────────────────────────────────
 
+/// If `mount` is currently held by the in-process AutoDJ, set
+/// `preempt_pending`, cancel the AutoDJ, and wait up to `wait_for` for it to
+/// release the slot. Returns `true` on success, `false` on timeout.
+pub(crate) async fn preempt_autodj_if_present(
+    mount: &Arc<ActiveMount>,
+    wait_for: Duration,
+) -> bool {
+    if !mount.source_connected.load(Ordering::Acquire)
+        || !mount.source_is_autodj.load(Ordering::Acquire)
+    {
+        return true; // nothing to preempt
+    }
+    mount.preempt_pending.store(true, Ordering::Release);
+    let token = mount.source_cancel.lock().unwrap().clone();
+    if let Some(t) = token { t.cancel(); }
+
+    let deadline = tokio::time::Instant::now() + wait_for;
+    while mount.source_connected.load(Ordering::Acquire) {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    true
+}
+
 enum AuthOutcome {
     Unauthorized,
     Internal,
@@ -293,6 +319,10 @@ async fn resolve_or_create_mount(
     codec: CodecId,
 ) -> Result<(Arc<ActiveMount>, bool), AuthOutcome> {
     if let Some(mount) = state.mounts.get(mount_path) {
+        if !preempt_autodj_if_present(&mount, Duration::from_millis(500)).await {
+            warn!("autodj preempt timed out for {mount_path}");
+            return Err(AuthOutcome::Internal);
+        }
         return match state.auth.verify_source(mount_path, password).await {
             Ok(true) => Ok((mount, false)),
             Ok(false) => Err(AuthOutcome::Unauthorized),
@@ -400,6 +430,8 @@ impl Drop for SourceDisconnectGuard {
         *self.mount.connected_at.lock().unwrap() = None;
         self.mount.source_overlay.store(Arc::new(None));
         self.mount.header_bytes.store(Arc::new(None));
+        // If an AutoDJ owns this mount path and was preempted by us, wake it.
+        self.mount.autodj_resume.notify_one();
         if let Some(registry) = &self.mounts {
             let _ = registry.remove(&self.mount_path);
             info!("source disconnected: mount={} (dynamic mount removed)", self.mount_path);
@@ -633,6 +665,58 @@ mod tests {
         let mut out = String::new();
         r.read_to_string(&mut out).await.unwrap();
         assert_eq!(out, "HELLO WORLD");
+    }
+
+    use rustyice_core::mount::{ActiveMount as TestActiveMount, MountInfo as TestMountInfo, MountMetadata as TestMountMetadata, MountRegistry as TestMountRegistry};
+    use std::time::Duration as StdDuration;
+
+    fn fake_autodj_mount() -> (TestMountRegistry, Arc<TestActiveMount>) {
+        use crate::bus::TokioBroadcastBus;
+        let bus = Arc::new(TokioBroadcastBus::new(64, 0));
+        let info = TestMountInfo {
+            path: "/auto".to_string(),
+            codec: CodecId::MP3,
+            source_password: "letmesource".to_string(),
+            max_listeners: None,
+            metadata: TestMountMetadata::default(),
+        };
+        let mount = Arc::new(TestActiveMount::new(info, bus));
+        let registry = TestMountRegistry::new();
+        registry.add(mount.clone());
+        (registry, mount)
+    }
+
+    #[tokio::test]
+    async fn preempt_autodj_cancels_token_and_waits_for_release() {
+        let (_reg, mount) = fake_autodj_mount();
+        // Pretend an AutoDJ has the slot.
+        mount.source_connected.store(true, Ordering::Release);
+        mount.source_is_autodj.store(true, Ordering::Release);
+        let autodj_cancel = tokio_util::sync::CancellationToken::new();
+        *mount.source_cancel.lock().unwrap() = Some(autodj_cancel.clone());
+
+        // Spawn a fake "autodj task" that releases the slot when cancelled.
+        let mount_clone = mount.clone();
+        tokio::spawn(async move {
+            autodj_cancel.cancelled().await;
+            mount_clone.source_connected.store(false, Ordering::Release);
+            mount_clone.source_is_autodj.store(false, Ordering::Release);
+        });
+
+        let ok = super::preempt_autodj_if_present(&mount, StdDuration::from_millis(500)).await;
+        assert!(ok, "preempt should succeed inside the timeout");
+        assert!(mount.preempt_pending.load(Ordering::Acquire), "preempt_pending must be set");
+        assert!(!mount.source_connected.load(Ordering::Acquire), "slot must be released");
+    }
+
+    #[tokio::test]
+    async fn preempt_returns_true_immediately_when_no_autodj() {
+        let (_reg, mount) = fake_autodj_mount();
+        // Mount is fresh — source_connected=false, source_is_autodj=false.
+        let ok = super::preempt_autodj_if_present(&mount, StdDuration::from_millis(500)).await;
+        assert!(ok);
+        assert!(!mount.preempt_pending.load(Ordering::Acquire),
+            "preempt_pending must NOT be set when there was nothing to preempt");
     }
 
     use crate::source_headers::parse_source_overlay;
