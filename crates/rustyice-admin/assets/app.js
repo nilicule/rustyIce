@@ -66,6 +66,109 @@ function sampleBandwidth(stats) {
   };
 }
 
+// ─── stream player (public detail view) ────────────────────────────────
+// Drives the hidden <audio> element on the stream-detail page. Owns all
+// playback state so metadata polling can refresh freely without touching it.
+const streamPlayer = {
+  audio: null,
+  url: null,
+  playing: false,
+  offline: false,
+
+  // Lazily grab the <audio> element and wire its events exactly once.
+  el() {
+    if (!this.audio) {
+      this.audio = $('stream-audio');
+      this.audio.addEventListener('playing', () => this.setStatus('playing'));
+      this.audio.addEventListener('waiting', () => {
+        if (this.playing) this.setStatus('connecting…');
+      });
+      this.audio.addEventListener('error', () => {
+        if (this.playing) {
+          this.playing = false;
+          this.render();
+          this.setStatus('playback error');
+        }
+      });
+    }
+    return this.audio;
+  },
+
+  // Point the player at a mount's stream URL, resetting any prior playback.
+  attach(url) {
+    this.teardown();
+    this.url = url;
+    this.render();
+    this.setStatus('ready');
+  },
+
+  // Reflect whether the mount is live. Offline disables the control.
+  setOffline(offline) {
+    this.offline = offline;
+    if (offline && this.playing) this.stop();
+    this.render();
+    if (offline) this.setStatus('offline');
+    else if (!this.playing) this.setStatus('ready');
+  },
+
+  toggle() {
+    if (this.playing) this.stop();
+    else this.play();
+  },
+
+  play() {
+    if (!this.url || this.offline) return;
+    const a = this.el();
+    a.src = this.url;
+    this.playing = true;
+    this.render();
+    this.setStatus('connecting…');
+    a.play().catch(() => {
+      this.playing = false;
+      this.render();
+      this.setStatus('playback error');
+    });
+  },
+
+  stop() {
+    // Clear `playing` before tearing down `src` so the error/emptied event
+    // fired by load() is ignored rather than shown as a failure.
+    this.playing = false;
+    const a = this.el();
+    a.pause();
+    a.removeAttribute('src');
+    a.load();           // actually drop the Icecast connection, not just buffer
+    this.render();
+    this.setStatus('ready');
+  },
+
+  // Stop playback and forget the mount — called on every navigation.
+  teardown() {
+    this.playing = false;
+    if (this.audio) {
+      this.audio.pause();
+      this.audio.removeAttribute('src');
+      this.audio.load();
+    }
+    this.url = null;
+    this.offline = false;
+  },
+
+  render() {
+    const btn = $('stream-play-btn');
+    if (!btn) return;
+    btn.disabled = this.offline || !this.url;
+    btn.classList.toggle('playing', this.playing);
+    $('stream-play-icon').textContent = this.playing ? '◼' : '▶';
+    $('stream-play-label').textContent = this.playing ? 'STOP' : 'PLAY';
+  },
+
+  setStatus(text) {
+    const el = $('stream-player-status');
+    if (el) el.textContent = text;
+  },
+};
+
 // ─── routing ───────────────────────────────────────────────────────────
 async function route() {
   const hash = location.hash;
@@ -480,6 +583,7 @@ async function doLogout(ev) {
 }
 $('logout-btn').addEventListener('click', doLogout);
 $('detail-logout-btn').addEventListener('click', doLogout);
+$('stream-play-btn').addEventListener('click', () => streamPlayer.toggle());
 
 // ─── boot ──────────────────────────────────────────────────────────────
 window.addEventListener('hashchange', route);
