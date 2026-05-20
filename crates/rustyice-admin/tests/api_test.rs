@@ -678,3 +678,136 @@ async fn get_config_includes_path_and_source() {
     assert_eq!(json["path"], serde_json::Value::Null);
     assert_eq!(json["source"], "defaults");
 }
+
+// ─── PUT /api/config/server tests ─────────────────────────────────────────
+
+struct RecordingApplier {
+    last: std::sync::Mutex<Option<Config>>,
+    fail_with: Option<String>,
+    warnings: Vec<String>,
+}
+
+impl RecordingApplier {
+    fn new() -> Self {
+        Self { last: std::sync::Mutex::new(None), fail_with: None, warnings: vec![] }
+    }
+    #[allow(dead_code)]
+    fn with_warnings(ws: Vec<String>) -> Self {
+        Self { last: std::sync::Mutex::new(None), fail_with: None, warnings: ws }
+    }
+    #[allow(dead_code)]
+    fn failing(msg: &str) -> Self {
+        Self {
+            last: std::sync::Mutex::new(None),
+            fail_with: Some(msg.to_string()),
+            warnings: vec![],
+        }
+    }
+    fn take(&self) -> Option<Config> {
+        self.last.lock().unwrap().take()
+    }
+}
+
+#[async_trait]
+impl rustyice_admin::api::config::ConfigApplier for RecordingApplier {
+    async fn apply(&self, new_cfg: Config) -> Result<Vec<String>, String> {
+        *self.last.lock().unwrap() = Some(new_cfg);
+        if let Some(msg) = &self.fail_with {
+            return Err(msg.clone());
+        }
+        Ok(self.warnings.clone())
+    }
+}
+
+fn make_state_with_applier(applier: Arc<RecordingApplier>) -> AdminState {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let cfg = Config {
+        server: ServerConfig {
+            stream_bind: "127.0.0.1:0".parse().unwrap(),
+            admin_bind: "127.0.0.1:0".parse().unwrap(),
+            hostname: "localhost".to_string(),
+        },
+        logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
+        auth: AuthConfig::default(),
+        limits: LimitsConfig {
+            max_listeners_global: 100,
+            ring_size: 64,
+            slow_listener_grace_s: 2,
+            source_max_kbps: None,
+            burst_size: 65_536,
+        },
+        mounts: vec![],
+        tls: None,
+        transcode: None,
+        autodjs: vec![],
+        relays: vec![],
+    };
+    AdminState {
+        mounts: MountRegistry::new(),
+        listeners: ListenerMap::new(),
+        prometheus: handle,
+        start_time: Instant::now(),
+        auth: Arc::new(TestAuth { admin_password: None }),
+        sessions: SessionStore::new(Duration::from_secs(3600)),
+        version: "test",
+        stream_port: 8000,
+        config: Arc::new(ArcSwap::from_pointee(cfg)),
+        config_path: Arc::new(ArcSwap::from_pointee(None::<PathBuf>)),
+        config_applier: applier,
+        config_write_lock: Arc::new(tokio::sync::Mutex::new(())),
+    }
+}
+
+fn install_tempfile_config(state: &AdminState, dir: &tempfile::TempDir) -> PathBuf {
+    let path = dir.path().join("config.toml");
+    let toml_str = toml::to_string(&*state.config.load_full()).unwrap();
+    std::fs::write(&path, toml_str).unwrap();
+    state.config_path.store(Arc::new(Some(path.clone())));
+    path
+}
+
+fn server_patch_json(hostname: &str) -> serde_json::Value {
+    serde_json::json!({
+        "server":  { "stream_bind": "0.0.0.0:8000", "admin_bind": "127.0.0.1:8001", "hostname": hostname },
+        "logging": { "level": "info", "format": "pretty" },
+        "limits":  {
+            "max_listeners_global": 500,
+            "ring_size": 64,
+            "slow_listener_grace_s": 2,
+            "burst_size": 65536,
+            "source_max_kbps": null
+        }
+    })
+}
+
+#[tokio::test]
+async fn put_server_happy_path() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = server_patch_json("radio.example");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.server.hostname, "radio.example");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("radio.example"), "config.toml missing new hostname:\n{on_disk}");
+}
