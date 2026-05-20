@@ -198,7 +198,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Build routers ───────────────────────────────────────────────────────
     let stream_router = build_stream_router(app_state.clone());
 
-    let admin_state = app_state.admin_state(prom_handle);
+    let config_path_swap = Arc::new(ArcSwap::from_pointee(
+        match &config_source {
+            ConfigSource::File(p) => Some(p.clone()),
+            ConfigSource::Defaults => None,
+        },
+    ));
+    let config_write_lock = Arc::new(tokio::sync::Mutex::new(()));
+
+    // Applier closes over the same Arc-cloneable deps SIGHUP uses; each
+    // call rebuilds an `ApplyDeps` from the captured handles and delegates
+    // to `apply_config`.
+    struct AppApplier {
+        config: Arc<ArcSwap<Config>>,
+        auth: Arc<dyn rustyice_core::traits::AuthBackend + Send + Sync>,
+        mounts: rustyice_core::mount::MountRegistry,
+        autodjs: Arc<rustyice_server::config_reload::AutoDjRegistry>,
+        relays: Arc<rustyice_server::config_reload::RelayRegistry>,
+        app_state: rustyice_server::state::AppState,
+        shutdown: tokio_util::sync::CancellationToken,
+    }
+
+    #[async_trait::async_trait]
+    impl rustyice_admin::api::config::ConfigApplier for AppApplier {
+        async fn apply(&self, new_cfg: Config) -> Result<Vec<String>, String> {
+            let deps = rustyice_server::config_reload::ApplyDeps {
+                config: &self.config,
+                auth: &self.auth,
+                mounts: &self.mounts,
+                autodjs: &self.autodjs,
+                relays: &self.relays,
+                app_state: &self.app_state,
+                shutdown: &self.shutdown,
+            };
+            match rustyice_server::config_reload::apply_config(new_cfg, deps).await {
+                Ok(out) => Ok(out.warnings),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    }
+
+    let config_applier: rustyice_admin::api::config::ConfigApplierRef = Arc::new(AppApplier {
+        config: shared_cfg.clone(),
+        auth: auth.clone(),
+        mounts: mounts.clone(),
+        autodjs: autodj_registry.clone(),
+        relays: relay_registry.clone(),
+        app_state: app_state.clone(),
+        shutdown: shutdown.clone(),
+    });
+
+    let admin_state = app_state.admin_state(
+        prom_handle,
+        config_path_swap.clone(),
+        config_applier,
+        config_write_lock.clone(),
+    );
     let admin_router = build_admin_router(admin_state);
 
     // ── Spawn SIGHUP watcher ────────────────────────────────────────────────
@@ -213,6 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             autodj_registry.clone(),
             relay_registry.clone(),
             app_state.clone(),
+            config_write_lock.clone(),
             shutdown.clone(),
         ));
     }

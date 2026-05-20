@@ -5,8 +5,39 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+/// Dependencies needed to apply a `Config` to the running server. Shared by
+/// the SIGHUP reload path and the admin API config-edit endpoints.
+pub struct ApplyDeps<'a> {
+    pub config: &'a Arc<ArcSwap<Config>>,
+    pub auth: &'a Arc<dyn AuthBackend + Send + Sync>,
+    pub mounts: &'a MountRegistry,
+    pub autodjs: &'a Arc<AutoDjRegistry>,
+    pub relays: &'a Arc<RelayRegistry>,
+    pub app_state: &'a crate::state::AppState,
+    pub shutdown: &'a CancellationToken,
+}
+
+/// Outcome of a successful `apply_config` call.
+#[derive(Debug, Default)]
+pub struct ApplyOutcome {
+    /// Human-readable notices about fields that were saved but require a
+    /// process restart to take effect (e.g. `stream_bind`).
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApplyError {
+    #[error("auth reload: {0}")]
+    Auth(String),
+}
+
 /// Watches for SIGHUP and reloads hot-reloadable config fields.
 /// Runs until `shutdown` is cancelled.
+///
+/// `config_write_lock` is the same mutex held by API saves; SIGHUP acquires
+/// it for its load+apply sequence so a half-written `config.toml` is never
+/// observable to the reloader.
+#[allow(clippy::too_many_arguments)]
 pub async fn watch_sighup(
     config_path: PathBuf,
     config: Arc<ArcSwap<Config>>,
@@ -15,6 +46,7 @@ pub async fn watch_sighup(
     autodjs: Arc<AutoDjRegistry>,
     relays: Arc<RelayRegistry>,
     app_state: crate::state::AppState,
+    config_write_lock: Arc<tokio::sync::Mutex<()>>,
     shutdown: CancellationToken,
 ) {
     #[cfg(unix)]
@@ -32,7 +64,17 @@ pub async fn watch_sighup(
             tokio::select! {
                 _ = sighup.recv() => {
                     info!("SIGHUP received, reloading config from {}", config_path.display());
-                    do_reload(&config_path, &config, &auth, &mounts, &autodjs, &relays, &app_state, &shutdown).await;
+                    let _guard = config_write_lock.lock().await;
+                    let deps = ApplyDeps {
+                        config: &config,
+                        auth: &auth,
+                        mounts: &mounts,
+                        autodjs: &autodjs,
+                        relays: &relays,
+                        app_state: &app_state,
+                        shutdown: &shutdown,
+                    };
+                    do_reload_from_disk(&config_path, deps).await;
                 }
                 () = shutdown.cancelled() => {
                     info!("config reload task shutting down");
@@ -44,42 +86,44 @@ pub async fn watch_sighup(
 
     #[cfg(not(unix))]
     {
+        let _ = config_write_lock; // silence unused on non-unix
         shutdown.cancelled().await;
     }
 }
 
-async fn do_reload(
-    path: &std::path::Path,
-    config: &Arc<ArcSwap<Config>>,
-    auth: &Arc<dyn AuthBackend + Send + Sync>,
-    mounts: &MountRegistry,
-    autodjs: &Arc<AutoDjRegistry>,
-    relays: &Arc<RelayRegistry>,
-    app_state: &crate::state::AppState,
-    shutdown: &CancellationToken,
-) {
-    let new_cfg = match rustyice_core::config::load(path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("config reload failed (keeping old config): {e}");
-            return;
-        }
-    };
+/// Apply `new_cfg` to the running server. Performs the same per-mount,
+/// per-autodj, per-relay diff as the SIGHUP reload path. Restart-required
+/// field changes are reported via [`ApplyOutcome::warnings`] instead of
+/// being applied (the caller writes them to disk for a future restart to
+/// pick up).
+pub async fn apply_config(
+    new_cfg: Config,
+    deps: ApplyDeps<'_>,
+) -> Result<ApplyOutcome, ApplyError> {
+    let ApplyDeps { config, auth, mounts, autodjs, relays, app_state, shutdown } = deps;
+    let mut outcome = ApplyOutcome::default();
 
     let old = config.load();
 
     if old.server.stream_bind != new_cfg.server.stream_bind {
-        warn!("stream_bind changed — restart required for this to take effect");
+        let w = "stream_bind changed — restart required for this to take effect".to_string();
+        warn!("{w}");
+        outcome.warnings.push(w);
     }
     if old.server.admin_bind != new_cfg.server.admin_bind {
-        warn!("admin_bind changed — restart required for this to take effect");
+        let w = "admin_bind changed — restart required for this to take effect".to_string();
+        warn!("{w}");
+        outcome.warnings.push(w);
     }
     if old.limits.ring_size != new_cfg.limits.ring_size {
-        warn!("ring_size changed — restart required for this to take effect");
+        let w = "ring_size changed — restart required for this to take effect".to_string();
+        warn!("{w}");
+        outcome.warnings.push(w);
     }
 
     if let Err(e) = auth.reload(&new_cfg).await {
         error!("auth reload error: {e}");
+        return Err(ApplyError::Auth(e.to_string()));
     }
 
     for mount_cfg in &new_cfg.mounts {
@@ -286,7 +330,29 @@ async fn do_reload(
     }
 
     config.store(Arc::new(new_cfg));
-    info!("config reloaded successfully");
+    Ok(outcome)
+}
+
+/// SIGHUP reload helper: load the config file at `path` from disk, then
+/// apply it via [`apply_config`]. Logs warnings and errors; does not return
+/// them to the caller (the SIGHUP path is fire-and-forget).
+async fn do_reload_from_disk(path: &std::path::Path, deps: ApplyDeps<'_>) {
+    let new_cfg = match rustyice_core::config::load(path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("config reload failed (keeping old config): {e}");
+            return;
+        }
+    };
+    match apply_config(new_cfg, deps).await {
+        Ok(out) => {
+            for w in &out.warnings {
+                warn!("{w}");
+            }
+            info!("config reloaded successfully");
+        }
+        Err(e) => error!("config apply failed (keeping running config): {e}"),
+    }
 }
 
 use rustyice_core::config::{AutoDjConfig, RelayConfig};
@@ -523,4 +589,135 @@ mod tests {
         // Name was reloaded.
         assert_eq!(mount.info.load().metadata.name.as_deref(), Some("Reloaded Name"));
     }
+
+    // ── apply_config tests ──────────────────────────────────────────────────
+
+    use async_trait::async_trait;
+    use rustyice_core::error::AuthError;
+    use rustyice_core::traits::{IngestProtocol, OutputProtocol};
+    use rustyice_core::types::{ListenerStats, SourceStats};
+
+    struct OkAuth;
+    #[async_trait]
+    impl AuthBackend for OkAuth {
+        async fn verify_admin(&self, _: &str, _: &str) -> Result<bool, AuthError> { Ok(false) }
+        async fn verify_source(&self, _: &str, _: &str) -> Result<bool, AuthError> { Ok(false) }
+        async fn reload(&self, _: &Config) -> Result<(), AuthError> { Ok(()) }
+    }
+
+    struct FailingAuth;
+    #[async_trait]
+    impl AuthBackend for FailingAuth {
+        async fn verify_admin(&self, _: &str, _: &str) -> Result<bool, AuthError> { Ok(false) }
+        async fn verify_source(&self, _: &str, _: &str) -> Result<bool, AuthError> { Ok(false) }
+        async fn reload(&self, _: &Config) -> Result<(), AuthError> {
+            Err(AuthError::ReloadFailed("simulated".into()))
+        }
+    }
+
+    /// Test stub: never invoked because tests don't touch the relay branch.
+    struct StubIngest;
+    #[async_trait]
+    impl IngestProtocol for StubIngest {
+        fn name(&self) -> &'static str { "stub" }
+        async fn run(
+            &self,
+            _reader: Pin<Box<dyn tokio::io::AsyncRead + Send + Unpin>>,
+            _bus: Arc<dyn BroadcastBus>,
+            _codec: CodecId,
+            _cancellation: tokio_util::sync::CancellationToken,
+        ) -> Result<SourceStats, rustyice_core::error::IngestError> {
+            unreachable!("apply_config tests should never trigger ingest");
+        }
+    }
+
+    struct StubOutput;
+    #[async_trait]
+    impl OutputProtocol for StubOutput {
+        fn name(&self) -> &'static str { "stub" }
+        async fn run(
+            &self,
+            _: Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>,
+            _: Pin<Box<dyn futures::Stream<Item = Arc<StreamPacket>> + Send>>,
+            _: Arc<MountInfo>,
+            _: Arc<ArcSwap<Option<String>>>,
+            _: Arc<ArcSwap<Option<rustyice_core::mount::SourceOverlay>>>,
+            _: bool,
+            _: CancellationToken,
+        ) -> Result<ListenerStats, rustyice_core::error::OutputError> {
+            unreachable!("apply_config tests should never trigger output");
+        }
+    }
+
+    fn make_app_state(
+        config: Arc<ArcSwap<Config>>,
+        auth: Arc<dyn AuthBackend + Send + Sync>,
+        mounts: MountRegistry,
+    ) -> crate::state::AppState {
+        crate::state::AppState {
+            mounts,
+            auth,
+            ingest: Arc::new(StubIngest),
+            output: Arc::new(StubOutput),
+            listeners: rustyice_admin::ListenerMap::new(),
+            config,
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_config_returns_stream_bind_warning() {
+        let config = Arc::new(ArcSwap::from_pointee(base_config()));
+        let auth: Arc<dyn AuthBackend + Send + Sync> = Arc::new(OkAuth);
+        let mounts = MountRegistry::new();
+        let autodjs = Arc::new(AutoDjRegistry::new());
+        let relays = Arc::new(RelayRegistry::new());
+        let app_state = make_app_state(config.clone(), auth.clone(), mounts.clone());
+        let shutdown = CancellationToken::new();
+
+        let mut new_cfg = base_config();
+        new_cfg.server.stream_bind = "0.0.0.0:9000".parse().unwrap();
+
+        let deps = ApplyDeps {
+            config: &config,
+            auth: &auth,
+            mounts: &mounts,
+            autodjs: &autodjs,
+            relays: &relays,
+            app_state: &app_state,
+            shutdown: &shutdown,
+        };
+        let outcome = apply_config(new_cfg, deps).await.expect("apply succeeded");
+        assert!(
+            outcome.warnings.iter().any(|w| w.contains("stream_bind")),
+            "expected stream_bind warning, got {:?}",
+            outcome.warnings,
+        );
+        // New config was swapped in.
+        assert_eq!(config.load().server.stream_bind.port(), 9000);
+    }
+
+    #[tokio::test]
+    async fn apply_config_propagates_auth_error() {
+        let config = Arc::new(ArcSwap::from_pointee(base_config()));
+        let auth: Arc<dyn AuthBackend + Send + Sync> = Arc::new(FailingAuth);
+        let mounts = MountRegistry::new();
+        let autodjs = Arc::new(AutoDjRegistry::new());
+        let relays = Arc::new(RelayRegistry::new());
+        let app_state = make_app_state(config.clone(), auth.clone(), mounts.clone());
+        let shutdown = CancellationToken::new();
+
+        let deps = ApplyDeps {
+            config: &config,
+            auth: &auth,
+            mounts: &mounts,
+            autodjs: &autodjs,
+            relays: &relays,
+            app_state: &app_state,
+            shutdown: &shutdown,
+        };
+        let err = apply_config(base_config(), deps).await.unwrap_err();
+        assert!(matches!(err, ApplyError::Auth(_)));
+    }
+
 }

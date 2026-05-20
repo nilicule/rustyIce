@@ -5,6 +5,7 @@ use rustyice_core::mount::MountRegistry;
 use rustyice_core::traits::AuthBackend;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -173,4 +174,12 @@ pub struct AdminState {
     /// to build clickable links to active mounts.
     pub stream_port: u16,
     pub config: Arc<ArcSwap<Config>>,
+    /// Backing file for the running config. `None` when running on built-in
+    /// defaults; the first successful `PUT /api/config/...` swaps in a path.
+    pub config_path: Arc<ArcSwap<Option<PathBuf>>>,
+    /// Bridge into the server-crate apply pipeline.
+    pub config_applier: crate::api::config::ConfigApplierRef,
+    /// Serializes read-modify-write of `config.toml` across API saves and
+    /// SIGHUP-driven reloads. The same Arc is also held by the SIGHUP task.
+    pub config_write_lock: Arc<tokio::sync::Mutex<()>>,
 }

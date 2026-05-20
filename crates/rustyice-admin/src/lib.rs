@@ -1,6 +1,7 @@
 #![warn(clippy::pedantic)]
 
 pub mod api;
+pub mod config_write;
 pub mod metrics;
 pub mod router;
 pub mod state;
