@@ -2101,6 +2101,7 @@ name = "rustyice-server"
 version = "0.3.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "axum",
  "base64",
  "bcrypt",
