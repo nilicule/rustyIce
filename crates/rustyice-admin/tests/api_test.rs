@@ -991,3 +991,108 @@ async fn put_server_defaults_mode_bootstraps_config_toml() {
     assert!(path_after.is_some(), "config_path should be installed after first save");
     assert!(applier.take().is_some());
 }
+
+#[tokio::test]
+async fn put_server_disk_unwritable_returns_500_and_skips_apply() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    state.config_path.store(Arc::new(Some(PathBuf::from(
+        "/this/path/definitely/does/not/exist/config.toml",
+    ))));
+    let cookie = session_cookie(&state, "admin");
+
+    let body = server_patch_json("h");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["disk_written"], false);
+    assert!(applier.take().is_none(), "applier must not be called on disk failure");
+}
+
+#[tokio::test]
+async fn put_server_apply_failed_returns_500_with_disk_written_true() {
+    let applier = Arc::new(RecordingApplier::failing("auth reload: boom"));
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = server_patch_json("applied-fail-host");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["disk_written"], true);
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        on_disk.contains("applied-fail-host"),
+        "disk should reflect requested change even though apply failed:\n{on_disk}",
+    );
+}
+
+#[tokio::test]
+async fn put_server_concurrent_saves_serialize() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie_a = session_cookie(&state, "admin");
+    let cookie_b = session_cookie(&state, "admin");
+
+    let body_a = server_patch_json("alpha");
+    let body_b = server_patch_json("beta");
+
+    let app = build_admin_router(state);
+    let app2 = app.clone();
+    let (r1, r2) = tokio::join!(
+        app.oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie_a)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body_a.to_string()))
+                .unwrap()
+        ),
+        app2.oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie_b)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body_b.to_string()))
+                .unwrap()
+        ),
+    );
+    assert_eq!(r1.unwrap().status(), StatusCode::OK);
+    assert_eq!(r2.unwrap().status(), StatusCode::OK);
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    let has_alpha = on_disk.contains(r#""alpha""#);
+    let has_beta = on_disk.contains(r#""beta""#);
+    assert!(has_alpha ^ has_beta, "expected exactly one hostname, got:\n{on_disk}");
+}
