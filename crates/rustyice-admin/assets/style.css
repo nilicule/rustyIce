@@ -719,6 +719,14 @@ a.stream-row:hover .stream-path::before {
   border-top: 1px solid var(--fg-muted);
 }
 
+/* Back-to-dashboard link sits above the section items with a soft divider
+   underneath so it reads as navigation-out rather than another section. */
+.page-side-nav a.page-side-nav-back {
+  padding-bottom: .8rem;
+  margin-bottom: .5rem;
+  border-bottom: 1px solid var(--fg-muted);
+}
+
 .config-pane { min-width: 0; }
 .config-banner {
   margin-bottom: 1.5rem;
