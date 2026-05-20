@@ -71,39 +71,3 @@ walkdir      = "2"
 rand         = { version = "0.8", features = ["std_rng"] }
 id3          = "1"
 
-# ── Release profiles ───────────────────────────────────────────────────────
-# `release`            — fast local iteration; cargo defaults.
-# `release-dist`       — distribution build with cross-crate optimization
-#                        and stripped symbols. CI uses this for release
-#                        artifacts; run locally with
-#                        `cargo build --profile release-dist`.
-# `release-debuginfo`  — release optimizations but keep debug info so
-#                        perf / Instruments / dtrace see real symbol names.
-#
-# Why `lto = "thin"` (not `"fat"`):
-#   Thin LTO summarizes each crate's IR and lets the optimizer make
-#   cross-crate inlining / dead-code decisions from those summaries
-#   without merging everything into one giant module. Almost as good
-#   for size and speed as fat LTO, but the link is dramatically
-#   faster (typically 2-3×) — important for CI build times.
-#
-# Why `codegen-units = 1`:
-#   Forces a single LLVM module per crate before LTO, which gives the
-#   optimizer the largest possible scope to make decisions. Slightly
-#   slower compile, tighter codegen.
-#
-# Not enabled in either profile:
-#  - opt-level = "z" / "s": smaller, but can pessimize the stream-
-#    encoding hot paths (mp3lame / Vorbis encode loops).
-#  - panic = "abort": another ~15-20% cut, but Tokio task panics stop
-#    propagating via JoinHandle and any `catch_unwind` in deps no-ops.
-
-[profile.release-dist]
-inherits = "release"
-lto = "thin"
-codegen-units = 1
-strip = "symbols"
-
-[profile.release-debuginfo]
-inherits = "release"
-debug = true
