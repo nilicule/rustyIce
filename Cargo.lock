@@ -1970,7 +1970,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rustyice-admin"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-auth"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-autodj"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -2037,7 +2037,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-codec"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "bytes",
  "rustyice-core",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-ingest"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-loadtest"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-output"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-server"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-transcode"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "bytes",
  "mp3lame-sys",
