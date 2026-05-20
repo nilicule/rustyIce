@@ -1588,3 +1588,74 @@ async fn put_mounts_treats_redacted_sentinel_as_keep_existing() {
     let applied = applier.take().expect("applier was called");
     assert_eq!(applied.mounts[0].source_password, "original-pw");
 }
+
+#[tokio::test]
+async fn put_server_sets_global_source_password() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let mut body = server_patch_json("localhost");
+    body["auth"] = serde_json::json!({ "source_password": "letmesource" });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.auth.source_password.as_deref(), Some("letmesource"));
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains(r#"source_password = "letmesource""#));
+}
+
+#[tokio::test]
+async fn put_server_keeps_global_source_password_when_blank_or_sentinel() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.auth.source_password = Some("original".into());
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    // Blank string and the redaction sentinel should both be ignored.
+    for sentinel in ["", "***"] {
+        let mut body = server_patch_json("localhost");
+        body["auth"] = serde_json::json!({ "source_password": sentinel });
+
+        let app = build_admin_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config/server")
+                    .header("Cookie", cookie.clone())
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let applied = applier.take().expect("applier was called");
+        assert_eq!(applied.auth.source_password.as_deref(), Some("original"),
+            "sentinel `{sentinel}` should leave the password alone");
+    }
+}

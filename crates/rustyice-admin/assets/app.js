@@ -419,6 +419,10 @@ const configView = {
 
   renderServer() {
     const { server, logging, limits } = this.current;
+    // `auth.source_password` is sent redacted on GET. The form starts blank
+    // and the user only types here to *change* the password — blank means
+    // "leave the running value alone".
+    const hasGlobalSourcePw = !!(this.current.auth && this.current.auth.source_password);
     this.snapshot = this.snapshotFromCurrent();
     $('config-pane-body').innerHTML = `
       <form class="config-form" id="config-server-form" novalidate>
@@ -447,6 +451,14 @@ const configView = {
           ${this.field('source_max_kbps',        'SOURCE MAX KBPS', limits.source_max_kbps ?? '',  { type: 'number', min: 0, hint: 'blank = unlimited' })}
         </fieldset>
 
+        <fieldset class="config-group">
+          <legend class="config-group-title">SOURCES</legend>
+          ${this.field('source_password', 'GLOBAL SOURCE PW', '',
+            { type: 'password',
+              hint: hasGlobalSourcePw ? '(set — blank to keep)' : '(unset)',
+              help: 'Optional shared password for source clients. Used both as the fallback for new [[mounts]] entries that don’t carry their own password and to authorize sources connecting on unlisted paths (dynamic mounts).' })}
+        </fieldset>
+
         <div class="config-form-actions">
           <button type="button" class="btn btn-ghost"   id="config-server-discard" disabled>DISCARD</button>
           <button type="submit"  class="btn btn-primary" id="config-server-save"    disabled>SAVE CHANGES</button>
@@ -469,6 +481,9 @@ const configView = {
       slow_listener_grace_s: limits.slow_listener_grace_s,
       burst_size: limits.burst_size,
       source_max_kbps: limits.source_max_kbps,
+      // Password fields always start blank; dirty detection compares
+      // against the blank snapshot, so typing anything flags as dirty.
+      source_password: '',
     };
   },
 
@@ -605,11 +620,12 @@ const configView = {
       slow_listener_grace_s: n('slow_listener_grace_s'),
       burst_size: n('burst_size'),
       source_max_kbps: nOrNull('source_max_kbps'),
+      source_password: v('source_password'),
     };
   },
 
   buildServerPutBody(c) {
-    return {
+    const body = {
       server:  { stream_bind: c.stream_bind, admin_bind: c.admin_bind, hostname: c.hostname },
       logging: { level: c.level, format: c.format },
       limits:  {
@@ -620,6 +636,13 @@ const configView = {
         source_max_kbps: c.source_max_kbps,
       },
     };
+    // Only include `auth` when the user actually typed a new password;
+    // blank means "keep the running value alone", which on the wire is
+    // simply leaving the auth key out.
+    if (c.source_password && c.source_password.trim()) {
+      body.auth = { source_password: c.source_password };
+    }
+    return body;
   },
 
   // ── transcode section ───────────────────────────────────────────────

@@ -13,6 +13,17 @@ pub struct ServerPatch {
     pub server: ServerSubPatch,
     pub logging: LoggingSubPatch,
     pub limits: LimitsSubPatch,
+    /// Optional `[auth]` partial. `None` means "don't touch the [auth] table
+    /// at all" — leaves user entries and any other operator-set keys alone.
+    /// Per-user management lives on the Users section.
+    #[serde(default)]
+    pub auth: Option<AuthSubPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthSubPatch {
+    /// `Some(s)` writes `[auth].source_password = s`; `None` removes the key.
+    pub source_password: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,6 +130,23 @@ pub fn apply_server_patch(doc: &mut DocumentMut, p: &ServerPatch) {
         None => {
             if let Some(t) = limits.as_table_mut() {
                 t.remove("source_max_kbps");
+            }
+        }
+    }
+
+    // Only touch `[auth]` when the patch explicitly opts in — this leaves
+    // `[[auth.users]]` and any other operator-managed keys untouched on
+    // every Server-section save.
+    if let Some(auth_patch) = &p.auth {
+        let auth = ensure_table(doc, "auth");
+        match &auth_patch.source_password {
+            Some(s) => {
+                auth["source_password"] = value(s.clone());
+            }
+            None => {
+                if let Some(t) = auth.as_table_mut() {
+                    t.remove("source_password");
+                }
             }
         }
     }
@@ -408,7 +436,45 @@ burst_size            = 65536
                 burst_size: 65_536,
                 source_max_kbps: None,
             },
+            auth: None,
         }
+    }
+
+    #[test]
+    fn server_patch_writes_global_source_password_when_auth_set() {
+        let mut doc: DocumentMut = sample_doc().parse().unwrap();
+        let mut patch = make_patch();
+        patch.auth = Some(AuthSubPatch { source_password: Some("letmesource".into()) });
+        apply_server_patch(&mut doc, &patch);
+        let out = doc.to_string();
+        assert!(out.contains("[auth]"), "expected [auth] table:\n{out}");
+        assert!(out.contains(r#"source_password = "letmesource""#));
+    }
+
+    #[test]
+    fn server_patch_clears_global_source_password_when_auth_some_none() {
+        let with_pw = sample_doc().to_string()
+            + "\n[auth]\nsource_password = \"oldpw\"\n";
+        let mut doc: DocumentMut = with_pw.parse().unwrap();
+        let mut patch = make_patch();
+        patch.auth = Some(AuthSubPatch { source_password: None });
+        apply_server_patch(&mut doc, &patch);
+        let out = doc.to_string();
+        assert!(!out.contains("source_password"), "key should be gone:\n{out}");
+    }
+
+    #[test]
+    fn server_patch_leaves_auth_table_alone_when_patch_auth_is_none() {
+        let with_pw = sample_doc().to_string()
+            + "\n[auth]\nsource_password = \"oldpw\"\n\n[[auth.users]]\nusername = \"admin\"\npassword_bcrypt = \"$2y$12$hash\"\n";
+        let mut doc: DocumentMut = with_pw.parse().unwrap();
+        let patch = make_patch(); // auth = None
+        apply_server_patch(&mut doc, &patch);
+        let out = doc.to_string();
+        // Both keys survive untouched.
+        assert!(out.contains(r#"source_password = "oldpw""#), "kept source_password");
+        assert!(out.contains(r#"username = "admin""#), "kept user entry");
+        assert!(out.contains("$2y$12$hash"), "kept bcrypt hash");
     }
 
     #[test]

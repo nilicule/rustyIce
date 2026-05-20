@@ -90,7 +90,7 @@ pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
 // ─── PUT /api/config/server ────────────────────────────────────────────────
 
 use crate::config_write::{
-    self, LimitsSubPatch, LoggingSubPatch, MountSubPatch, MountsPatch,
+    self, AuthSubPatch, LimitsSubPatch, LoggingSubPatch, MountSubPatch, MountsPatch,
     ServerPatch as WritePatch, ServerSubPatch, TranscodePatch, TranscodeSubPatch, WriteError,
 };
 use rustyice_core::config::{LogFormat, TranscodeFormat};
@@ -102,6 +102,16 @@ pub struct ServerPutBody {
     pub server: ServerSubBody,
     pub logging: LoggingSubBody,
     pub limits: LimitsSubBody,
+    /// Optional `[auth]` partial. The only field surfaced here is
+    /// `source_password` — per-user changes go through the Users section.
+    #[serde(default)]
+    pub auth: Option<AuthSubBody>,
+}
+
+#[derive(Deserialize)]
+pub struct AuthSubBody {
+    #[serde(default)]
+    pub source_password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -144,6 +154,19 @@ pub async fn put_server(
     State(state): State<AdminState>,
     Json(body): Json<ServerPutBody>,
 ) -> impl IntoResponse {
+    // Resolve the global source_password the same way mounts do: empty
+    // string or the redacted sentinel means "leave the existing value
+    // alone". An explicit non-empty new value rotates it. The handler
+    // never has a way to *clear* the password from the UI — operators
+    // can drop the key by editing config.toml directly.
+    let current = state.config.load_full();
+    let auth_patch = match body.auth.as_ref().and_then(|a| a.source_password.as_deref()) {
+        Some(p) if !p.is_empty() && p != "***" => Some(AuthSubPatch {
+            source_password: Some(p.to_string()),
+        }),
+        _ => None,
+    };
+
     let patch = WritePatch {
         server: ServerSubPatch {
             stream_bind: body.server.stream_bind,
@@ -161,6 +184,7 @@ pub async fn put_server(
             burst_size: body.limits.burst_size,
             source_max_kbps: body.limits.source_max_kbps,
         },
+        auth: auth_patch,
     };
 
     if let Err(WriteError::Validate { field, message }) =
@@ -173,7 +197,6 @@ pub async fn put_server(
             .into_response();
     }
 
-    let current = state.config.load_full();
     let mut candidate: Config = (*current).clone();
     candidate.server.stream_bind = patch.server.stream_bind;
     candidate.server.admin_bind = patch.server.admin_bind;
@@ -189,6 +212,9 @@ pub async fn put_server(
     candidate.limits.slow_listener_grace_s = patch.limits.slow_listener_grace_s;
     candidate.limits.burst_size = patch.limits.burst_size;
     candidate.limits.source_max_kbps = patch.limits.source_max_kbps;
+    if let Some(auth_patch) = &patch.auth {
+        candidate.auth.source_password = auth_patch.source_password.clone();
+    }
 
     if let Err(msg) = candidate.validate_paths() {
         return (
