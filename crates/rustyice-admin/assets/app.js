@@ -1674,7 +1674,9 @@ const configView = {
           <span class="config-field-hint">Restart the playlist when it ends.</span>
         </div>
 
-        ${adjSelectField(idx, 'order', 'ORDER', a.order, ['shuffle', 'sequential'])}
+        ${adjSelectField(idx, 'order', 'ORDER', a.order, ['shuffle', 'sequential'], {
+          help: 'Shuffle picks tracks at random with no immediate repeats. Sequential plays files in alphabetical order from the folder; when it reaches the end it stops (or restarts the list if LOOP is on).',
+        })}
 
         ${adjTextField(idx, 'name', 'NAME', a.name)}
         ${adjTextField(idx, 'description', 'DESCRIPTION', a.description)}
@@ -2029,10 +2031,13 @@ function adjNumberField(idx, name, label, value, opts = {}) {
   `;
 }
 
-function adjSelectField(idx, name, label, value, options) {
+function adjSelectField(idx, name, label, value, options, extra = {}) {
   const opts = options
     .map((o) => `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`)
     .join('');
+  const help = extra.help
+    ? `<p class="config-field-help">${escapeHtml(extra.help)}</p>`
+    : '';
   return `
     <div class="config-field" data-field="${name}">
       <div class="config-field-label">
@@ -2040,6 +2045,7 @@ function adjSelectField(idx, name, label, value, options) {
       </div>
       <select id="cf-a${idx}-${name}" name="${name}">${opts}</select>
       <span></span>
+      ${help}
     </div>
   `;
 }
