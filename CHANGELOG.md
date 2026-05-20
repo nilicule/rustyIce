@@ -9,28 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### Admin console — per-section config editor
-- New `#admin/config` view with a left-rail sidebar listing every config section: **Server**, **Transcode**, **Mounts**, **Relays**, **AutoDJs**, and **Users** (Users pinned to the bottom). Each section has its own form / list editor; saves go through dedicated `PUT /api/config/<section>` endpoints.
-- Edits round-trip through `toml_edit` so existing comments, key order, and whitespace in `config.toml` survive every save. The on-disk file is updated atomically via tempfile + rename, then the same diff/apply pipeline the SIGHUP reload uses applies the change to the running server with no listener drops.
-- Saves and the SIGHUP path share a single `config_write_lock`, so concurrent saves and external `kill -HUP` can't race each other.
-- Defaults mode (no `config.toml` on disk) is fully supported — the first save serializes the running config to `./config.toml` and continues from there.
-- Server section now also exposes a `GLOBAL SOURCE PW` field; the admin can rotate the `[auth].source_password` from the UI without editing the file.
-- Mounts / Relays / AutoDJs / Users use a collapsed-list editor: rows shrink to one line by default, click to expand exactly one entry, inline `×` opens an in-row confirm prompt (no native `confirm()` dialog), and saving an edited entry preserves other entries' redacted passwords by resolving blank fields to the existing values server-side.
-- AutoDJ FOLDER field gains a `BROWSE…` button that opens a server-side filesystem picker (modal with directory navigation, parent / cd / select). Necessary because a browser file picker would point at the operator's machine, not the server.
-- Restart-required fields (`stream_bind`, `admin_bind`, `ring_size`) are still editable; the save response surfaces a structured warning and the inline banner stays put until the operator restarts.
+#### Admin console — full config editor
+- New `#admin/config` view with per-section editors for server, transcode, mounts, relays, autodjs, and users. Saves go through `PUT /api/config/<section>`, round-trip via `toml_edit` to preserve comments and key order, write atomically, and apply through the same diff pipeline SIGHUP uses (sharing a write lock to avoid races).
+- Mounts / relays / autodjs / users use a collapsed list with one-at-a-time inline editing and an in-row confirm prompt for removal. Blank password fields resolve to the existing values server-side, so editing one entry doesn't require re-entering everyone else's secrets.
+- AutoDJ folders are picked via a server-side filesystem browser (`BROWSE…`); a browser file picker would point at the operator's machine, not the server.
+- `apply_config` now adds and removes mounts at runtime to match `[[mounts]]` — previously only metadata updates worked without a restart.
 
-#### Role-based access control
-- `[[auth.users]]` entries gain a `role` field — `admin` or `operator`. Unspecified role defaults to `admin` for backward compatibility, so existing configs upgrade cleanly.
-- **Admins** can edit every section, including users and server-wide settings.
-- **Operators** are limited to mounts, autodjs, and relays. Admin-only sections are hidden from the sidebar; admin-only routes return `403`; even read access to admin-only fields via `GET /api/config` is stripped server-side (server / logging / limits / transcode / `[[auth.users]]` / `[auth].source_password` come back as `null` / empty arrays).
-- Self-protection: the logged-in admin can't remove or demote their own account, and the UI hides the `×` and locks the role select on their own row. A separate "at least one admin must remain" check keeps the list from collapsing into an operator-only state.
+#### Role-based access
+- `[[auth.users]]` entries gain `role = "admin" | "operator"` (missing role defaults to `admin`, so existing configs upgrade cleanly). Operators can edit mounts, autodjs, and relays; admin-only sections are hidden from their sidebar, write attempts return `403`, and `GET /api/config` strips those fields server-side.
+- The logged-in admin can't remove or demote themselves, and the user list is rejected if it contains no admins at all.
 
-#### Runtime mount lifecycle on config save
-- `apply_config` now adds and removes mounts in the runtime registry to match `[[mounts]]`. Previously only metadata for surviving mounts was updated; adding or removing a mount via the UI didn't take effect until restart. Dynamic mounts (created by sources authenticating with the global source password) are untouched.
-
-#### UI polish
-- Toast notifications (top-right, auto-dismiss) for transient save/discard confirmations, separate from sticky inline banners used for restart-required notices and apply-failed errors.
-- Listener disconnect (broken pipe / connection reset / aborted) is now logged at `debug`, not `warn` — that's expected user behavior, not a server problem.
+### Fixed
+- Listener disconnects (broken pipe / connection reset) now log at `debug` instead of `warn` — that's normal player behavior, not a server problem.
 
 [1.0.0]: https://github.com/nilicule/rustyice/releases/tag/v1.0.0
 
