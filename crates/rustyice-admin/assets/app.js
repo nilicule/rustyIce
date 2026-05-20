@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const show = (id) => $(id).classList.remove('hidden');
 const hide = (id) => $(id).classList.add('hidden');
 
-const VIEWS = ['view-landing', 'view-login', 'view-admin', 'view-mount-detail', 'view-stream-detail'];
+const VIEWS = ['view-landing', 'view-login', 'view-admin', 'view-mount-detail', 'view-stream-detail', 'view-config'];
 function showView(id) {
   for (const v of VIEWS) (v === id ? show : hide)(v);
 }
