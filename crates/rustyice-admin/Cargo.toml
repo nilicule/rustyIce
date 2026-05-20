@@ -22,6 +22,8 @@ tokio-util.workspace  = true
 serde_json.workspace  = true
 uuid.workspace        = true
 async-trait.workspace = true
+toml_edit.workspace   = true
+toml.workspace        = true
 
 [dev-dependencies]
 tokio        = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -29,4 +31,5 @@ axum         = { workspace = true }
 tower        = { workspace = true, features = ["util"] }
 serde_json.workspace = true
 futures.workspace    = true
+tempfile.workspace   = true
 rustyice-core = { path = "../rustyice-core" }
