@@ -323,6 +323,73 @@ const streamPlayer = {
   },
 };
 
+// ─── config view ──────────────────────────────────────────────────────
+const CONFIG_SECTIONS = ['server', 'transcode', 'autodjs', 'mounts', 'relays', 'users'];
+const configView = {
+  section: 'server',
+  snapshot: null,    // last server-confirmed values, for dirty tracking
+  current: null,     // last GET /api/config response
+
+  async enter(section) {
+    this.section = CONFIG_SECTIONS.includes(section) ? section : 'server';
+    this.setActiveNav();
+    this.clearBanner();
+    $('config-pane-body').innerHTML = '<div class="config-placeholder">loading…</div>';
+    try {
+      const res = await fetch('/api/config');
+      if (res.status === 401) { location.hash = ''; return; }
+      if (!res.ok) throw new Error(`config fetch failed: ${res.status}`);
+      this.current = await res.json();
+      this.maybeShowDefaultsBanner(this.current);
+      this.renderSection();
+    } catch (e) {
+      $('config-pane-body').innerHTML =
+        `<div class="config-placeholder">failed to load config: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+
+  setActiveNav() {
+    document.querySelectorAll('[data-config-section]').forEach((el) => {
+      el.classList.toggle('active', el.dataset.configSection === this.section);
+    });
+  },
+
+  clearBanner() {
+    const b = $('config-banner');
+    b.className = 'config-banner hidden';
+    b.innerHTML = '';
+  },
+
+  showBanner(message, kind = 'warning') {
+    const b = $('config-banner');
+    b.className = `config-banner ${kind}`;
+    b.textContent = message;
+  },
+
+  maybeShowDefaultsBanner(data) {
+    if (data.source === 'defaults') {
+      this.showBanner(
+        'Running on built-in defaults. First save will create ./config.toml next to the running binary.',
+      );
+    }
+  },
+
+  renderSection() {
+    if (this.section === 'server') {
+      this.renderServer();
+    } else {
+      $('config-pane-body').innerHTML =
+        `<div class="config-placeholder">— ${escapeHtml(this.section.toUpperCase())} editor coming soon —</div>`;
+    }
+  },
+
+  renderServer() {
+    // Implemented in Task 15.
+    $('config-pane-body').innerHTML =
+      '<div class="config-placeholder">server form rendering wired in Task 15</div>';
+  },
+};
+
 // ─── routing ───────────────────────────────────────────────────────────
 async function route() {
   // route() runs only on navigation (hashchange / boot), never on poll —
@@ -331,11 +398,16 @@ async function route() {
   streamPlayer.teardown();
   const hash = location.hash;
   const detailMatch = hash.match(/^#admin\/mount\/(.+)$/);
+  const configMatch = hash.match(/^#admin\/config(?:\/(.+))?$/);
   const streamMatch = hash.match(/^#stream\/(.+)$/);
   if (hash === '#admin') {
     const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
     if (me) enterAdmin(me.user);
     else enterLogin();
+  } else if (configMatch) {
+    const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
+    if (!me) { enterLogin(); return; }
+    enterConfig(me.user, configMatch[1] || 'server');
   } else if (detailMatch) {
     const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
     if (!me) { enterLogin(); return; }
@@ -395,6 +467,16 @@ function enterStreamDetail(mountPath) {
   $('stream-meta').innerHTML = '';
   showView('view-stream-detail');
   startPolling(refreshStreamDetail);
+}
+
+function enterConfig(user, section) {
+  state.view = 'config';
+  state.user = user;
+  state.mountPath = null;
+  $('config-user-label').textContent = user;
+  showView('view-config');
+  stopPolling(); // config view is edit-driven, not poll-driven
+  configView.enter(section);
 }
 
 function startPolling(fn) {
@@ -837,6 +919,7 @@ async function doLogout(ev) {
 }
 $('logout-btn').addEventListener('click', doLogout);
 $('detail-logout-btn').addEventListener('click', doLogout);
+$('config-logout-btn').addEventListener('click', doLogout);
 $('stream-play-btn').addEventListener('click', () => streamPlayer.toggle());
 $('viz-toggle').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-viz-mode]');
