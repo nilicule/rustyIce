@@ -13,8 +13,8 @@ A single-binary Icecast-compatible streaming server written in Rust, supporting 
 | **Transcoding** | Decode/re-encode between MP3 and Ogg Vorbis, per-mount or global, passthrough when unset |
 | **AutoDJ**      | Auto-rotate a folder of MP3 / Ogg Vorbis on a mount, shuffle or sequential, tag-derived ICY titles, live-source preemption |
 | **Relay**       | Pull from an upstream Icecast-compatible URL on a mount; optional Basic auth, optional transcode, exponential-backoff reconnect, live-source preemption |
-| **Auth**        | Per-mount source passwords + optional global password for dynamic mounts; bcrypt-hashed admin users |
-| **Admin**       | Web dashboard + REST API (kick-source / kick-listener, listener detail) and Prometheus `/metrics` |
+| **Auth**        | Per-mount source passwords + optional global password for dynamic mounts; bcrypt-hashed users with **admin** / **operator** roles |
+| **Admin**       | Web dashboard with per-section config editor (server, transcode, mounts, autodjs, relays, users), kick-source / kick-listener, server-side folder picker for autodj folders; REST API + Prometheus `/metrics` |
 | **Ops**         | Single static binary (async Tokio); `SIGHUP` hot-reload with no listener drops; optional config file with random-credential fallback |
 | **Landing**     | Public stream listing; each entry opens a per-stream detail page |
 | **Web player**  | Built-in browser player on the stream detail page — play/stop, live now-playing card, real-time bars/oscilloscope visualizer |
@@ -118,6 +118,15 @@ burst_size            = 65536       # burst-on-connect bytes (0 to disable)
 [[auth.users]]
 username        = "admin"
 password_bcrypt = "$2b$12$..."      # bcrypt hash; generate with htpasswd
+role            = "admin"           # "admin" or "operator"
+
+# Operators can edit mounts, autodjs, and relays via the admin console
+# but cannot change server-wide settings or manage users. Admins can do
+# everything. Defaults to "admin" when omitted (backward compatible).
+# [[auth.users]]
+# username        = "alice"
+# password_bcrypt = "$2b$12$..."
+# role            = "operator"
 
 [[mounts]]
 path            = "/stream"
