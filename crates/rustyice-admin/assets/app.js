@@ -411,6 +411,8 @@ const configView = {
       this.renderTranscode();
     } else if (this.section === 'mounts') {
       this.renderMounts();
+    } else if (this.section === 'relays') {
+      this.renderRelays();
     } else {
       $('config-pane-body').innerHTML =
         `<div class="config-placeholder">— ${escapeHtml(this.section.toUpperCase())} editor coming soon —</div>`;
@@ -1183,6 +1185,375 @@ const configView = {
     if (m.transcode) body.transcode = m.transcode;
     return body;
   },
+
+  // ── relays section ─────────────────────────────────────────────────────
+  // Mirrors the mounts editor: collapsed list, expand one at a time, inline
+  // remove confirmation. Field set differs (upstream URL, paired username/
+  // password, enabled toggle). Bulk save sends the full list; relays that
+  // aren't being edited leave their password fields blank, which the
+  // server resolves to the existing per-relay password.
+  renderRelays() {
+    this.relaysWorking = (this.current.relays || []).map((r) => this.relayToWorking(r));
+    this.relaysEditingIdx = null;
+    this.relaysPendingRemoveIdx = null;
+    this.drawRelaysPane();
+  },
+
+  relayToWorking(r) {
+    return {
+      mount: r.mount || '',
+      upstream: r.upstream || '',
+      enabled: r.enabled !== false,
+      name: r.name ?? '',
+      description: r.description ?? '',
+      genre: r.genre ?? '',
+      url: r.url ?? '',
+      username: r.username ?? '',
+      password: r.password === '***' ? '' : (r.password || ''),
+      max_listeners: r.max_listeners ?? null,
+      burst_size: r.burst_size ?? null,
+      transcode: r.transcode
+        ? { format: r.transcode.format, sample_rate: r.transcode.sample_rate, bitrate_kbps: r.transcode.bitrate_kbps }
+        : null,
+    };
+  },
+
+  drawRelaysPane() {
+    const rows = this.relaysWorking
+      .map((r, idx) => {
+        if (idx === this.relaysEditingIdx) return this.renderRelayCardForm(r, idx);
+        if (idx === this.relaysPendingRemoveIdx) return this.renderRelayConfirmRemoveRow(r, idx);
+        return this.renderRelayCollapsedRow(r, idx);
+      })
+      .join('');
+    $('config-pane-body').innerHTML = `
+      <div class="mounts-editor">
+        <div class="mounts-list" id="relays-list">
+          ${rows || '<div class="config-placeholder">— no relays configured —</div>'}
+        </div>
+        <div class="mounts-actions">
+          <button type="button" class="btn btn-ghost" id="relays-add"${this.relaysEditingIdx != null ? ' disabled' : ''}>
+            + ADD RELAY
+          </button>
+        </div>
+      </div>
+    `;
+    this.bindRelaysPane();
+  },
+
+  renderRelayCollapsedRow(r, idx) {
+    const summary = [r.name, r.upstream].filter(Boolean).join(' · ');
+    const offBadge = r.enabled ? '' : '<span class="mount-row-meta relay-row-off">OFF</span>';
+    const tc = r.transcode
+      ? `<span class="mount-row-meta">${escapeHtml(`${r.transcode.format} ${r.transcode.bitrate_kbps}k`)}</span>`
+      : '';
+    return `
+      <div class="mount-row" data-relay-action="edit" data-idx="${idx}" role="button" tabindex="0">
+        <span class="mount-row-path">${escapeHtml(r.mount || '(unnamed relay)')}</span>
+        <span class="mount-row-summary">${escapeHtml(summary)}</span>
+        ${offBadge}${tc}
+        <button type="button" class="mount-row-remove" data-relay-action="remove" data-idx="${idx}" title="Remove this relay" aria-label="Remove relay ${escapeHtml(r.mount)}">×</button>
+        <span class="mount-row-edit">EDIT →</span>
+      </div>
+    `;
+  },
+
+  renderRelayConfirmRemoveRow(r, idx) {
+    return `
+      <div class="mount-row mount-row-confirm" data-confirm-idx="${idx}" role="alertdialog">
+        <span class="mount-row-path">${escapeHtml(r.mount || '(unnamed relay)')}</span>
+        <span class="mount-row-confirm-msg">Remove this relay?</span>
+        <button type="button" class="btn btn-ghost mount-row-confirm-cancel" data-relay-action="cancel-remove">CANCEL</button>
+        <button type="button" class="btn btn-danger mount-row-confirm-ok" data-relay-action="confirm-remove" data-idx="${idx}">REMOVE</button>
+      </div>
+    `;
+  },
+
+  renderRelayCardForm(r, idx) {
+    const tc = r.transcode;
+    const isNew = !this.current.relays?.some((cur) => cur.mount === r.mount) || r.mount === '';
+    const passwordPlaceholder = isNew ? '(blank for anonymous)' : '(unchanged if blank)';
+    return `
+      <fieldset class="mount-edit-card" data-relay-idx="${idx}">
+        <legend class="mount-edit-card-title">
+          <span class="mount-edit-card-index">#${idx + 1}</span>
+          <span class="mount-edit-card-path">${escapeHtml(r.mount || '(new relay)')}</span>
+          <button type="button" class="btn btn-ghost mount-edit-card-remove" data-relay-action="remove" data-idx="${idx}">REMOVE</button>
+        </legend>
+
+        ${relayTextField(idx, 'mount', 'PATH', r.mount, { required: true, placeholder: '/jazz' })}
+        ${relayTextField(idx, 'upstream', 'UPSTREAM', r.upstream,
+            { required: true, placeholder: 'http://upstream.example.com/jazz' })}
+
+        <div class="config-field" data-field="enabled">
+          <div class="config-field-label">
+            <label for="cf-r${idx}-enabled">ENABLED</label>
+          </div>
+          <label class="toggle" for="cf-r${idx}-enabled">
+            <input id="cf-r${idx}-enabled" name="enabled" type="checkbox"${r.enabled ? ' checked' : ''}>
+            <span class="toggle-track"></span>
+          </label>
+          <span class="config-field-hint">Disable to stop pulling without removing the entry.</span>
+        </div>
+
+        ${relayTextField(idx, 'name', 'NAME', r.name)}
+        ${relayTextField(idx, 'description', 'DESCRIPTION', r.description)}
+        ${relayTextField(idx, 'genre', 'GENRE', r.genre)}
+        ${relayTextField(idx, 'url', 'URL', r.url)}
+
+        ${relayTextField(idx, 'username', 'UPSTREAM USERNAME', r.username,
+            { placeholder: 'blank if anonymous' })}
+        ${relayTextField(idx, 'password', 'UPSTREAM PASSWORD', '',
+            { type: 'password', placeholder: passwordPlaceholder })}
+
+        ${relayNumberField(idx, 'max_listeners', 'MAX LISTENERS', r.max_listeners,
+            { min: 1, hint: 'blank = global' })}
+        ${relayNumberField(idx, 'burst_size', 'BURST SIZE', r.burst_size,
+            { min: 0, hint: 'blank = global' })}
+
+        <div class="config-field" data-field="transcode_override">
+          <div class="config-field-label">
+            <label for="cf-r${idx}-tc-enabled">TRANSCODE OVERRIDE</label>
+          </div>
+          <label class="toggle" for="cf-r${idx}-tc-enabled">
+            <input id="cf-r${idx}-tc-enabled" name="transcode_enabled" type="checkbox" data-relay-idx="${idx}" data-field-kind="tc-toggle"${tc ? ' checked' : ''}>
+            <span class="toggle-track"></span>
+          </label>
+          <span class="config-field-hint">Overrides the global transcode for this relay only.</span>
+        </div>
+
+        <div class="mount-transcode" data-relay-idx="${idx}"${tc ? '' : ' hidden'}>
+          ${relaySelectField(idx, 'tc_format', 'FORMAT', tc?.format ?? 'mp3', ['mp3', 'vorbis'])}
+          ${relayNumberField(idx, 'tc_sample_rate', 'SAMPLE RATE', tc?.sample_rate ?? 44100, { min: 1, hint: 'Hz' })}
+          ${relayNumberField(idx, 'tc_bitrate_kbps', 'BITRATE', tc?.bitrate_kbps ?? 128, { min: 1, hint: 'kbps' })}
+        </div>
+
+        <div class="config-form-actions">
+          <button type="button" class="btn btn-ghost"   data-relay-action="cancel-edit">CANCEL</button>
+          <button type="button" class="btn btn-primary" data-relay-action="save-edit">SAVE</button>
+        </div>
+      </fieldset>
+    `;
+  },
+
+  bindRelaysPane() {
+    const list = $('relays-list');
+    const add = $('relays-add');
+
+    list.addEventListener('change', (e) => {
+      if (e.target.matches('[data-field-kind="tc-toggle"]')) {
+        const idx = e.target.dataset.relayIdx;
+        const block = list.querySelector(`.mount-transcode[data-relay-idx="${idx}"]`);
+        if (block) block.hidden = !e.target.checked;
+      }
+    });
+
+    list.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('[data-relay-action="remove"]');
+      const confirmRemoveBtn = e.target.closest('[data-relay-action="confirm-remove"]');
+      const cancelRemoveBtn = e.target.closest('[data-relay-action="cancel-remove"]');
+      const saveBtn = e.target.closest('[data-relay-action="save-edit"]');
+      const cancelBtn = e.target.closest('[data-relay-action="cancel-edit"]');
+      const editBtn = removeBtn || confirmRemoveBtn || cancelRemoveBtn || saveBtn || cancelBtn
+        ? null
+        : e.target.closest('[data-relay-action="edit"]');
+
+      if (removeBtn) {
+        this.relaysPendingRemoveIdx = Number(removeBtn.dataset.idx);
+        this.drawRelaysPane();
+        const ok = list.querySelector('[data-relay-action="confirm-remove"]');
+        if (ok) ok.focus();
+        return;
+      }
+      if (cancelRemoveBtn) {
+        this.relaysPendingRemoveIdx = null;
+        this.drawRelaysPane();
+        return;
+      }
+      if (confirmRemoveBtn) {
+        const idx = Number(confirmRemoveBtn.dataset.idx);
+        this.relaysPendingRemoveIdx = null;
+        this.removeRelayAtIndex(idx);
+        return;
+      }
+      if (editBtn) {
+        if (this.relaysEditingIdx != null) return;
+        this.relaysEditingIdx = Number(editBtn.dataset.idx);
+        this.drawRelaysPane();
+        const m = $(`cf-r${this.relaysEditingIdx}-mount`);
+        if (m) m.focus();
+        return;
+      }
+      if (cancelBtn) {
+        const idx = this.relaysEditingIdx;
+        const original = this.current.relays?.[idx];
+        if (original) {
+          this.relaysWorking[idx] = this.relayToWorking(original);
+        } else {
+          this.relaysWorking.splice(idx, 1);
+        }
+        this.relaysEditingIdx = null;
+        this.drawRelaysPane();
+        pushToast('Edit cancelled.', 'success');
+        return;
+      }
+      if (saveBtn) {
+        this.saveCurrentRelayEdit();
+        return;
+      }
+    });
+
+    list.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.relaysPendingRemoveIdx != null) {
+        e.preventDefault();
+        this.relaysPendingRemoveIdx = null;
+        this.drawRelaysPane();
+        return;
+      }
+      if (e.target.closest('button')) return;
+      const row = e.target.closest('[data-relay-action="edit"]');
+      if (!row) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        row.click();
+      }
+    });
+
+    add.addEventListener('click', () => {
+      if (this.relaysEditingIdx != null) return;
+      this.relaysWorking.push({
+        mount: '',
+        upstream: '',
+        enabled: true,
+        name: '',
+        description: '',
+        genre: '',
+        url: '',
+        username: '',
+        password: '',
+        max_listeners: null,
+        burst_size: null,
+        transcode: null,
+      });
+      this.relaysEditingIdx = this.relaysWorking.length - 1;
+      this.drawRelaysPane();
+      const m = $(`cf-r${this.relaysEditingIdx}-mount`);
+      if (m) m.focus();
+    });
+  },
+
+  removeRelayAtIndex(idx) {
+    const next = this.relaysWorking.slice();
+    next.splice(idx, 1);
+    this.persistRelays(next, { successMessage: 'Relay removed.' });
+  },
+
+  saveCurrentRelayEdit() {
+    const idx = this.relaysEditingIdx;
+    if (idx == null) return;
+    this.clearFieldErrors();
+    this.relaysWorking[idx] = this.readRelayFromDom(idx);
+    if (!this.relaysWorking[idx].mount) {
+      this.markFieldError(`relays[${idx}].mount`, 'must be non-empty');
+      return;
+    }
+    if (!this.relaysWorking[idx].upstream) {
+      this.markFieldError(`relays[${idx}].upstream`, 'must be non-empty');
+      return;
+    }
+    this.persistRelays(this.relaysWorking, { successMessage: 'Relay saved.' });
+  },
+
+  readRelayFromDom(idx) {
+    const v = (k) => $(`cf-r${idx}-${k}`)?.value ?? '';
+    const num = (k) => {
+      const s = v(k).trim();
+      return s === '' ? null : Number(s);
+    };
+    const tcEnabled = $(`cf-r${idx}-tc-enabled`)?.checked ?? false;
+    return {
+      mount: v('mount').trim(),
+      upstream: v('upstream').trim(),
+      enabled: $(`cf-r${idx}-enabled`)?.checked ?? true,
+      name: v('name').trim(),
+      description: v('description').trim(),
+      genre: v('genre').trim(),
+      url: v('url').trim(),
+      username: v('username').trim(),
+      password: v('password'),
+      max_listeners: num('max_listeners'),
+      burst_size: num('burst_size'),
+      transcode: tcEnabled
+        ? {
+            format: v('tc_format') || 'mp3',
+            sample_rate: Number(v('tc_sample_rate')) || 44100,
+            bitrate_kbps: Number(v('tc_bitrate_kbps')) || 128,
+          }
+        : null,
+    };
+  },
+
+  relayWorkingToPutBody(r) {
+    const body = {
+      mount: r.mount,
+      upstream: r.upstream,
+      enabled: r.enabled,
+    };
+    if (r.name) body.name = r.name;
+    if (r.description) body.description = r.description;
+    if (r.genre) body.genre = r.genre;
+    if (r.url) body.url = r.url;
+    if (r.username) body.username = r.username;
+    // Send password only when the user typed one; blank means
+    // "keep existing" per the resolution rules on the server.
+    if (r.password) body.password = r.password;
+    if (r.max_listeners != null) body.max_listeners = r.max_listeners;
+    if (r.burst_size != null) body.burst_size = r.burst_size;
+    if (r.transcode) body.transcode = r.transcode;
+    return body;
+  },
+
+  async persistRelays(workingList, { successMessage }) {
+    const body = { relays: workingList.map((r) => this.relayWorkingToPutBody(r)) };
+    try {
+      const res = await fetch('/api/config/relays', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) { location.hash = ''; return; }
+      const payload = await res.json().catch(() => null);
+      if (res.status === 200) {
+        if (payload) {
+          this.current = {
+            ...this.current,
+            relays: payload.relays,
+            path: payload.path,
+            source: payload.source,
+          };
+        }
+        this.renderRelays();
+        const warnings = payload?.applied_warnings || [];
+        if (warnings.length) {
+          this.showBanner(`Saved. ${warnings.join(' · ')}`, 'warning');
+          pushToast(`${successMessage} Restart required.`, 'warning', 4000);
+        } else {
+          pushToast(successMessage, 'success');
+        }
+      } else if ((res.status === 400 || res.status === 422) && payload?.field) {
+        this.markFieldError(payload.field, payload.error || 'invalid value');
+      } else if (res.status === 500 && payload?.disk_written) {
+        this.showBanner(
+          'Saved to disk, but apply failed. Running server still uses the previous config; restart to load the new file.',
+          'error',
+        );
+      } else {
+        this.showBanner(`Save failed: ${payload?.error || res.statusText}`, 'error');
+      }
+    } catch (err) {
+      this.showBanner(`Save failed: ${err.message}`, 'error');
+    }
+  },
 };
 
 // ─── mounts editor helpers (free functions, used by template literals) ───
@@ -1225,6 +1596,51 @@ function mountSelectField(idx, name, label, value, options) {
         <label for="cf-m${idx}-${name}">${label}</label>
       </div>
       <select id="cf-m${idx}-${name}" name="${name}">${opts}</select>
+      <span></span>
+    </div>
+  `;
+}
+
+// ─── relays editor helpers (separate `cf-r${idx}-*` ID namespace) ────────
+function relayTextField(idx, name, label, value, opts = {}) {
+  const type = opts.type || 'text';
+  const placeholder = opts.placeholder ? ` placeholder="${escapeHtml(opts.placeholder)}"` : '';
+  const required = opts.required ? ' required' : '';
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-r${idx}-${name}">${label}</label>
+      </div>
+      <input id="cf-r${idx}-${name}" name="${name}" type="${type}" value="${escapeHtml(String(value ?? ''))}"${placeholder}${required}>
+      <span></span>
+    </div>
+  `;
+}
+
+function relayNumberField(idx, name, label, value, opts = {}) {
+  const min = opts.min != null ? ` min="${opts.min}"` : '';
+  const hint = opts.hint ? `<span class="config-field-hint">${escapeHtml(opts.hint)}</span>` : '<span></span>';
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-r${idx}-${name}">${label}</label>
+      </div>
+      <input id="cf-r${idx}-${name}" name="${name}" type="number" value="${escapeHtml(String(value ?? ''))}"${min}>
+      ${hint}
+    </div>
+  `;
+}
+
+function relaySelectField(idx, name, label, value, options) {
+  const opts = options
+    .map((o) => `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`)
+    .join('');
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-r${idx}-${name}">${label}</label>
+      </div>
+      <select id="cf-r${idx}-${name}" name="${name}">${opts}</select>
       <span></span>
     </div>
   `;

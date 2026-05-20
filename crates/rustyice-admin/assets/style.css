@@ -1034,6 +1034,11 @@ a.stream-row:hover .stream-path::before {
   border: 1px solid var(--accent);
   padding: .12rem .4rem;
 }
+/* "OFF" badge for disabled relays — muted, not the accent color. */
+.relay-row-off {
+  color: var(--fg-muted);
+  border-color: var(--fg-muted);
+}
 .mount-row-edit {
   font-family: var(--mono);
   font-size: .7rem;

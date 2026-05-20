@@ -91,7 +91,8 @@ pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
 
 use crate::config_write::{
     self, AuthSubPatch, LimitsSubPatch, LoggingSubPatch, MountSubPatch, MountsPatch,
-    ServerPatch as WritePatch, ServerSubPatch, TranscodePatch, TranscodeSubPatch, WriteError,
+    RelaySubPatch, RelaysPatch, ServerPatch as WritePatch, ServerSubPatch, TranscodePatch,
+    TranscodeSubPatch, WriteError,
 };
 use rustyice_core::config::{LogFormat, TranscodeFormat};
 use serde::Deserialize;
@@ -439,6 +440,142 @@ pub async fn put_mounts(
 
     persist_and_apply(&state, "mounts", candidate, |doc| {
         config_write::apply_mounts_patch(doc, &patch);
+    })
+    .await
+}
+
+// ─── PUT /api/config/relays ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RelaysPutBody {
+    pub relays: Vec<RelaySubBody>,
+}
+
+#[derive(Deserialize)]
+pub struct RelaySubBody {
+    pub mount: String,
+    pub upstream: String,
+    #[serde(default = "default_true_relay_enabled_body")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Optional on the wire. Empty/omitted/sentinel means "keep existing
+    /// upstream password for relays that match by mount". A new value
+    /// rotates it; for brand-new relays an empty value is accepted (no
+    /// fallback exists — relays without credentials connect anonymously).
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub max_listeners: Option<u32>,
+    #[serde(default)]
+    pub burst_size: Option<u32>,
+    #[serde(default)]
+    pub transcode: Option<TranscodeSubBody>,
+}
+
+fn default_true_relay_enabled_body() -> bool {
+    true
+}
+
+pub async fn put_relays(
+    State(state): State<AdminState>,
+    Json(body): Json<RelaysPutBody>,
+) -> impl IntoResponse {
+    // Map existing relay mount path → current password so we can keep
+    // unchanged credentials without making the client re-enter them.
+    let current = state.config.load_full();
+    let existing_passwords: std::collections::HashMap<&str, &str> = current
+        .relays
+        .iter()
+        .filter_map(|r| r.password.as_deref().map(|p| (r.mount.as_str(), p)))
+        .collect();
+
+    let mut resolved: Vec<RelaySubPatch> = Vec::with_capacity(body.relays.len());
+    for r in body.relays.into_iter() {
+        let supplied = r.password.as_deref();
+        let password = match supplied {
+            Some(p) if !p.is_empty() && p != "***" => Some(p.to_string()),
+            Some(_) => existing_passwords.get(r.mount.as_str()).map(|p| (*p).to_string()),
+            None => existing_passwords.get(r.mount.as_str()).map(|p| (*p).to_string()),
+        };
+        resolved.push(RelaySubPatch {
+            mount: r.mount,
+            upstream: r.upstream,
+            enabled: r.enabled,
+            name: r.name,
+            description: r.description,
+            genre: r.genre,
+            url: r.url,
+            username: r.username,
+            password,
+            max_listeners: r.max_listeners,
+            burst_size: r.burst_size,
+            transcode: r.transcode.map(|t| TranscodeSubPatch {
+                format: t.format,
+                sample_rate: t.sample_rate,
+                bitrate_kbps: t.bitrate_kbps,
+            }),
+        });
+    }
+    let patch = RelaysPatch { relays: resolved };
+
+    if let Err(WriteError::Validate { field, message }) =
+        config_write::validate_relays_patch(&patch)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: message, field: Some(field), disk_written: false }),
+        )
+            .into_response();
+    }
+
+    let mut candidate: Config = (*current).clone();
+    candidate.relays = patch
+        .relays
+        .iter()
+        .map(|r| RelayConfig {
+            mount: r.mount.clone(),
+            upstream: r.upstream.clone(),
+            name: r.name.clone(),
+            description: r.description.clone(),
+            genre: r.genre.clone(),
+            url: r.url.clone(),
+            enabled: r.enabled,
+            username: r.username.clone(),
+            password: r.password.clone(),
+            max_listeners: r.max_listeners,
+            burst_size: r.burst_size,
+            transcode: r.transcode.as_ref().map(|t| TranscodeConfig {
+                format: match t.format.as_str() {
+                    "mp3" => TranscodeFormat::Mp3,
+                    "vorbis" => TranscodeFormat::Vorbis,
+                    _ => unreachable!("validated above"),
+                },
+                sample_rate: t.sample_rate,
+                bitrate_kbps: t.bitrate_kbps,
+            }),
+        })
+        .collect();
+
+    // Cross-section: no path collisions with mounts/autodjs.
+    if let Err(msg) = candidate.validate_paths() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: msg, field: None, disk_written: false }),
+        )
+            .into_response();
+    }
+
+    persist_and_apply(&state, "relays", candidate, |doc| {
+        config_write::apply_relays_patch(doc, &patch);
     })
     .await
 }

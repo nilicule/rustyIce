@@ -1659,3 +1659,204 @@ async fn put_server_keeps_global_source_password_when_blank_or_sentinel() {
             "sentinel `{sentinel}` should leave the password alone");
     }
 }
+
+// ─── PUT /api/config/relays tests ────────────────────────────────────────
+
+#[tokio::test]
+async fn put_relays_writes_list_to_disk_and_applies() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "relays": [
+            { "mount": "/jazz", "upstream": "http://upstream.example.com/jazz", "name": "Jazz" },
+            { "mount": "/lofi", "upstream": "https://up.example.com/lofi",
+              "enabled": false, "username": "u", "password": "p" }
+        ]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/relays")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.relays.len(), 2);
+    assert_eq!(applied.relays[0].mount, "/jazz");
+    assert_eq!(applied.relays[1].mount, "/lofi");
+    assert!(applied.relays[0].enabled);
+    assert!(!applied.relays[1].enabled);
+    assert_eq!(applied.relays[1].password.as_deref(), Some("p"));
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[[relays]]"));
+    assert!(on_disk.contains(r#"mount = "/jazz""#));
+    assert!(on_disk.contains(r#"upstream = "http://upstream.example.com/jazz""#));
+    assert!(on_disk.contains("enabled = false"));
+}
+
+#[tokio::test]
+async fn put_relays_empty_list_clears_block() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.relays.push(rustyice_core::config::RelayConfig {
+            mount: "/old".into(),
+            upstream: "http://example.com/x".into(),
+            name: None,
+            description: None,
+            genre: None,
+            url: None,
+            enabled: true,
+            username: None,
+            password: None,
+            max_listeners: None,
+            burst_size: None,
+            transcode: None,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/relays")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::json!({ "relays": [] }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert!(applied.relays.is_empty());
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("[[relays]]"));
+}
+
+#[tokio::test]
+async fn put_relays_rejects_non_http_upstream() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "relays": [{ "mount": "/r", "upstream": "ftp://example.com/x" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/relays")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["field"], "relays[0].upstream");
+    assert!(applier.take().is_none());
+}
+
+#[tokio::test]
+async fn put_relays_keeps_existing_password_when_omitted() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.relays.push(rustyice_core::config::RelayConfig {
+            mount: "/jazz".into(),
+            upstream: "http://upstream.example.com/jazz".into(),
+            name: Some("Original".into()),
+            description: None,
+            genre: None,
+            url: None,
+            enabled: true,
+            username: Some("u".into()),
+            password: Some("original-pw".into()),
+            max_listeners: None,
+            burst_size: None,
+            transcode: None,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    // Rename, leave username AND password fields out — should keep both.
+    let body = serde_json::json!({
+        "relays": [{
+            "mount": "/jazz",
+            "upstream": "http://upstream.example.com/jazz",
+            "name": "Renamed",
+            "username": "u"
+        }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/relays")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.relays[0].name.as_deref(), Some("Renamed"));
+    assert_eq!(applied.relays[0].password.as_deref(), Some("original-pw"));
+}
+
+#[tokio::test]
+async fn put_relays_requires_auth() {
+    let state = make_state();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/relays")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::json!({ "relays": [] }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

@@ -325,6 +325,179 @@ pub fn validate_mounts_patch(p: &MountsPatch) -> Result<(), WriteError> {
     Ok(())
 }
 
+// ─── Relays section ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct RelaysPatch {
+    pub relays: Vec<RelaySubPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelaySubPatch {
+    pub mount: String,
+    pub upstream: String,
+    #[serde(default = "default_true_relay_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub max_listeners: Option<u32>,
+    #[serde(default)]
+    pub burst_size: Option<u32>,
+    /// Optional per-relay transcode override.
+    #[serde(default)]
+    pub transcode: Option<TranscodeSubPatch>,
+}
+
+fn default_true_relay_enabled() -> bool {
+    true
+}
+
+/// # Errors
+/// Returns `WriteError::Validate` for empty/duplicate mount paths, non-
+/// http(s) upstream URLs, half-set credentials, or invalid per-relay
+/// transcode fields.
+pub fn validate_relays_patch(p: &RelaysPatch) -> Result<(), WriteError> {
+    let mut seen = std::collections::HashSet::new();
+    for (idx, r) in p.relays.iter().enumerate() {
+        let prefix = format!("relays[{idx}]");
+        if r.mount.trim().is_empty() {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.mount"),
+                message: "must be non-empty".into(),
+            });
+        }
+        if !r.mount.starts_with('/') {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.mount"),
+                message: "must start with \"/\"".into(),
+            });
+        }
+        if !seen.insert(r.mount.clone()) {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.mount"),
+                message: format!("duplicate relay mount path: {}", r.mount),
+            });
+        }
+        if !(r.upstream.starts_with("http://") || r.upstream.starts_with("https://")) {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.upstream"),
+                message: "must be an http:// or https:// URL".into(),
+            });
+        }
+        match (&r.username, &r.password) {
+            (Some(u), None) if !u.is_empty() => {
+                return Err(WriteError::Validate {
+                    field: format!("{prefix}.password"),
+                    message: "must be set when username is set".into(),
+                });
+            }
+            (None, Some(p_)) if !p_.is_empty() => {
+                return Err(WriteError::Validate {
+                    field: format!("{prefix}.username"),
+                    message: "must be set when password is set".into(),
+                });
+            }
+            _ => {}
+        }
+        if let Some(0) = r.max_listeners {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.max_listeners"),
+                message: "must be greater than 0 when set".into(),
+            });
+        }
+        if let Some(b) = r.burst_size {
+            const MAX_BURST: u32 = 16 * 1024 * 1024;
+            if b > MAX_BURST {
+                return Err(WriteError::Validate {
+                    field: format!("{prefix}.burst_size"),
+                    message: format!("must be <= {MAX_BURST} bytes (16 MiB)"),
+                });
+            }
+        }
+        if let Some(tc) = &r.transcode {
+            let wrap = TranscodePatch { transcode: Some(TranscodeSubPatch {
+                format: tc.format.clone(),
+                sample_rate: tc.sample_rate,
+                bitrate_kbps: tc.bitrate_kbps,
+            }) };
+            if let Err(WriteError::Validate { field, message }) = validate_transcode_patch(&wrap) {
+                let sub = field.strip_prefix("transcode.").unwrap_or(&field);
+                return Err(WriteError::Validate {
+                    field: format!("{prefix}.transcode.{sub}"),
+                    message,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replace the `[[relays]]` array of tables in `doc`. Top-of-file and
+/// other sections' comments survive; comments inside individual
+/// `[[relays]]` entries are not preserved.
+pub fn apply_relays_patch(doc: &mut DocumentMut, p: &RelaysPatch) {
+    if p.relays.is_empty() {
+        doc.as_table_mut().remove("relays");
+        return;
+    }
+    let mut aot = toml_edit::ArrayOfTables::new();
+    for r in &p.relays {
+        let mut t = toml_edit::Table::new();
+        t["mount"] = value(r.mount.clone());
+        t["upstream"] = value(r.upstream.clone());
+        if !r.enabled {
+            // Only write the field when it differs from the serde default
+            // (true) so disabled is explicit and enabled stays implicit.
+            t["enabled"] = value(false);
+        }
+        if let Some(s) = &r.name {
+            t["name"] = value(s.clone());
+        }
+        if let Some(s) = &r.description {
+            t["description"] = value(s.clone());
+        }
+        if let Some(s) = &r.genre {
+            t["genre"] = value(s.clone());
+        }
+        if let Some(s) = &r.url {
+            t["url"] = value(s.clone());
+        }
+        if let Some(s) = &r.username {
+            t["username"] = value(s.clone());
+        }
+        if let Some(s) = &r.password {
+            t["password"] = value(s.clone());
+        }
+        if let Some(n) = r.max_listeners {
+            t["max_listeners"] = value(i64::from(n));
+        }
+        if let Some(b) = r.burst_size {
+            t["burst_size"] = value(i64::from(b));
+        }
+        if let Some(tc) = &r.transcode {
+            let mut sub = toml_edit::Table::new();
+            sub["format"] = value(tc.format.clone());
+            sub["sample_rate"] = value(i64::from(tc.sample_rate));
+            sub["bitrate_kbps"] = value(i64::from(tc.bitrate_kbps));
+            sub.set_implicit(false);
+            t.insert("transcode", Item::Table(sub));
+        }
+        aot.push(t);
+    }
+    doc.insert("relays", Item::ArrayOfTables(aot));
+}
+
 /// Replace the `[[mounts]]` array of tables in `doc` with the patch's
 /// list. Top-of-file and other sections' comments survive; comments
 /// inside individual `[[mounts]]` entries are not preserved.
@@ -935,6 +1108,133 @@ burst_size            = 65536
             ],
         };
         assert!(validate_mounts_patch(&patch).is_ok());
+    }
+
+    // ── Relays ─────────────────────────────────────────────────────────────
+
+    fn basic_relay(mount: &str) -> RelaySubPatch {
+        RelaySubPatch {
+            mount: mount.into(),
+            upstream: "http://upstream.example.com/jazz".into(),
+            enabled: true,
+            name: None,
+            description: None,
+            genre: None,
+            url: None,
+            username: None,
+            password: None,
+            max_listeners: None,
+            burst_size: None,
+            transcode: None,
+        }
+    }
+
+    #[test]
+    fn relays_patch_writes_block() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        apply_relays_patch(
+            &mut doc,
+            &RelaysPatch { relays: vec![basic_relay("/jazz")] },
+        );
+        let out = doc.to_string();
+        assert!(out.contains("[[relays]]"));
+        assert!(out.contains(r#"mount = "/jazz""#));
+        assert!(out.contains(r#"upstream = "http://upstream.example.com/jazz""#));
+        // enabled=true is the serde default — should NOT be emitted.
+        assert!(!out.contains("enabled = true"));
+    }
+
+    #[test]
+    fn relays_patch_emits_enabled_false_explicitly() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        let mut r = basic_relay("/jazz");
+        r.enabled = false;
+        apply_relays_patch(&mut doc, &RelaysPatch { relays: vec![r] });
+        let out = doc.to_string();
+        assert!(out.contains("enabled = false"));
+    }
+
+    #[test]
+    fn relays_patch_writes_credentials_and_transcode() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        let r = RelaySubPatch {
+            username: Some("relay".into()),
+            password: Some("secret".into()),
+            transcode: Some(TranscodeSubPatch {
+                format: "vorbis".into(),
+                sample_rate: 48_000,
+                bitrate_kbps: 96,
+            }),
+            ..basic_relay("/jazz")
+        };
+        apply_relays_patch(&mut doc, &RelaysPatch { relays: vec![r] });
+        let out = doc.to_string();
+        assert!(out.contains(r#"username = "relay""#));
+        assert!(out.contains(r#"password = "secret""#));
+        assert!(out.contains("[relays.transcode]"));
+        assert!(out.contains(r#"format = "vorbis""#));
+    }
+
+    #[test]
+    fn relays_patch_with_empty_list_removes_block() {
+        let seeded = doc_without_mounts().to_string()
+            + "\n[[relays]]\nmount = \"/old\"\nupstream = \"http://a/b\"\n";
+        let mut doc: DocumentMut = seeded.parse().unwrap();
+        apply_relays_patch(&mut doc, &RelaysPatch { relays: vec![] });
+        let out = doc.to_string();
+        assert!(!out.contains("[[relays]]"));
+    }
+
+    #[test]
+    fn relays_validate_rejects_duplicate_mount_paths() {
+        let patch = RelaysPatch {
+            relays: vec![basic_relay("/dup"), basic_relay("/dup")],
+        };
+        let err = validate_relays_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, message } => {
+                assert_eq!(field, "relays[1].mount");
+                assert!(message.contains("/dup"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn relays_validate_rejects_non_http_upstream() {
+        let mut r = basic_relay("/r");
+        r.upstream = "ftp://example.com/x".into();
+        let err = validate_relays_patch(&RelaysPatch { relays: vec![r] }).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "relays[0].upstream"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn relays_validate_rejects_partial_credentials() {
+        let mut r = basic_relay("/r");
+        r.username = Some("user".into());
+        // password = None
+        let err = validate_relays_patch(&RelaysPatch { relays: vec![r] }).unwrap_err();
+        match err {
+            WriteError::Validate { field, message } => {
+                assert_eq!(field, "relays[0].password");
+                assert!(message.to_lowercase().contains("password") || message.to_lowercase().contains("set"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn relays_validate_accepts_valid_list() {
+        let patch = RelaysPatch {
+            relays: vec![
+                RelaySubPatch { name: Some("A".into()), ..basic_relay("/a") },
+                RelaySubPatch { name: Some("B".into()), ..basic_relay("/b") },
+            ],
+        };
+        assert!(validate_relays_patch(&patch).is_ok());
     }
 
     #[test]
