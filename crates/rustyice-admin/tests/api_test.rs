@@ -1860,3 +1860,200 @@ async fn put_relays_requires_auth() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ─── PUT /api/config/autodjs tests ────────────────────────────────────────
+
+#[tokio::test]
+async fn put_autodjs_writes_block_with_required_transcode() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "autodjs": [
+            {
+                "mount": "/lofi",
+                "folder": "/var/lib/rustyice/lofi",
+                "name": "Lofi",
+                "transcode": { "format": "mp3", "sample_rate": 44100, "bitrate_kbps": 128 }
+            }
+        ]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/autodjs")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.autodjs.len(), 1);
+    assert_eq!(applied.autodjs[0].mount, "/lofi");
+    assert_eq!(
+        applied.autodjs[0].folder,
+        std::path::PathBuf::from("/var/lib/rustyice/lofi")
+    );
+    assert!(applied.autodjs[0].enabled);
+    assert!(applied.autodjs[0].loop_playlist);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[[autodjs]]"));
+    assert!(on_disk.contains(r#"mount = "/lofi""#));
+    assert!(on_disk.contains(r#"folder = "/var/lib/rustyice/lofi""#));
+    assert!(on_disk.contains("[autodjs.transcode]"));
+}
+
+#[tokio::test]
+async fn put_autodjs_rejects_bad_order() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "autodjs": [
+            {
+                "mount": "/x",
+                "folder": "/tmp",
+                "order": "random",
+                "transcode": { "format": "mp3", "sample_rate": 44100, "bitrate_kbps": 128 }
+            }
+        ]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/autodjs")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["field"], "autodjs[0].order");
+    assert!(applier.take().is_none());
+}
+
+#[tokio::test]
+async fn put_autodjs_empty_list_clears_block() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.autodjs.push(rustyice_core::config::AutoDjConfig {
+            mount: "/old".into(),
+            folder: "/tmp".into(),
+            name: None,
+            description: None,
+            genre: None,
+            url: None,
+            enabled: true,
+            loop_playlist: true,
+            order: rustyice_core::config::Order::Shuffle,
+            max_listeners: None,
+            burst_size: None,
+            transcode: rustyice_core::config::TranscodeConfig {
+                format: rustyice_core::config::TranscodeFormat::Mp3,
+                sample_rate: 44_100,
+                bitrate_kbps: 128,
+            },
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/autodjs")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::json!({ "autodjs": [] }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("[[autodjs]]"));
+}
+
+#[tokio::test]
+async fn put_autodjs_emits_loop_false_explicitly() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "autodjs": [
+            {
+                "mount": "/once",
+                "folder": "/tmp",
+                "loop": false,
+                "order": "sequential",
+                "transcode": { "format": "mp3", "sample_rate": 44100, "bitrate_kbps": 128 }
+            }
+        ]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/autodjs")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("loop = false"));
+    assert!(on_disk.contains(r#"order = "sequential""#));
+}
+
+#[tokio::test]
+async fn put_autodjs_requires_auth() {
+    let state = make_state();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/autodjs")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::json!({ "autodjs": [] }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

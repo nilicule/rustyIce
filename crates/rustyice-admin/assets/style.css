@@ -1145,3 +1145,23 @@ a.stream-row:hover .stream-path::before {
 }
 .mount-transcode[hidden] { display: none; }
 .mounts-actions { display: flex; }
+
+/* AutoDJ transcode sub-fieldset (always visible, since transcode is
+   required for autodjs — no override toggle). */
+.adj-transcode-group {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: .85rem 1rem 1rem;
+  margin: .25rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.adj-transcode-title {
+  font-family: var(--mono);
+  font-size: .72rem;
+  letter-spacing: .18em;
+  color: var(--fg-muted);
+  margin: 0 0 .25rem;
+  padding: 0 .35rem;
+}

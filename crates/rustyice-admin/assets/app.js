@@ -413,6 +413,8 @@ const configView = {
       this.renderMounts();
     } else if (this.section === 'relays') {
       this.renderRelays();
+    } else if (this.section === 'autodjs') {
+      this.renderAutoDjs();
     } else {
       $('config-pane-body').innerHTML =
         `<div class="config-placeholder">— ${escapeHtml(this.section.toUpperCase())} editor coming soon —</div>`;
@@ -1554,6 +1556,357 @@ const configView = {
       this.showBanner(`Save failed: ${err.message}`, 'error');
     }
   },
+
+  // ── autodjs section ────────────────────────────────────────────────────
+  // Same accordion UX as mounts/relays. Differences:
+  // - `folder` is required (filesystem path to the music library)
+  // - `transcode` block is ALWAYS present (not optional) — no toggle
+  // - extra controls: LOOP toggle, ORDER select (shuffle/sequential)
+  renderAutoDjs() {
+    this.adjWorking = (this.current.autodjs || []).map((a) => this.adjToWorking(a));
+    this.adjEditingIdx = null;
+    this.adjPendingRemoveIdx = null;
+    this.drawAdjPane();
+  },
+
+  adjToWorking(a) {
+    return {
+      mount: a.mount || '',
+      folder: a.folder || '',
+      enabled: a.enabled !== false,
+      loop: a.loop !== false,    // JSON field name; backend serializes as "loop"
+      order: a.order || 'shuffle',
+      name: a.name ?? '',
+      description: a.description ?? '',
+      genre: a.genre ?? '',
+      url: a.url ?? '',
+      max_listeners: a.max_listeners ?? null,
+      burst_size: a.burst_size ?? null,
+      transcode: a.transcode
+        ? { format: a.transcode.format, sample_rate: a.transcode.sample_rate, bitrate_kbps: a.transcode.bitrate_kbps }
+        : { format: 'mp3', sample_rate: 44100, bitrate_kbps: 128 },
+    };
+  },
+
+  drawAdjPane() {
+    const rows = this.adjWorking
+      .map((a, idx) => {
+        if (idx === this.adjEditingIdx) return this.renderAdjCardForm(a, idx);
+        if (idx === this.adjPendingRemoveIdx) return this.renderAdjConfirmRemoveRow(a, idx);
+        return this.renderAdjCollapsedRow(a, idx);
+      })
+      .join('');
+    $('config-pane-body').innerHTML = `
+      <div class="mounts-editor">
+        <div class="mounts-list" id="adj-list">
+          ${rows || '<div class="config-placeholder">— no autodjs configured —</div>'}
+        </div>
+        <div class="mounts-actions">
+          <button type="button" class="btn btn-ghost" id="adj-add"${this.adjEditingIdx != null ? ' disabled' : ''}>
+            + ADD AUTODJ
+          </button>
+        </div>
+      </div>
+    `;
+    this.bindAdjPane();
+  },
+
+  renderAdjCollapsedRow(a, idx) {
+    const summary = [a.name, a.folder].filter(Boolean).join(' · ');
+    const offBadge = a.enabled ? '' : '<span class="mount-row-meta relay-row-off">OFF</span>';
+    const tc = a.transcode
+      ? `<span class="mount-row-meta">${escapeHtml(`${a.transcode.format} ${a.transcode.bitrate_kbps}k`)}</span>`
+      : '';
+    return `
+      <div class="mount-row" data-adj-action="edit" data-idx="${idx}" role="button" tabindex="0">
+        <span class="mount-row-path">${escapeHtml(a.mount || '(unnamed autodj)')}</span>
+        <span class="mount-row-summary">${escapeHtml(summary)}</span>
+        <span class="mount-row-badges">${offBadge}${tc}</span>
+        <button type="button" class="mount-row-remove" data-adj-action="remove" data-idx="${idx}" title="Remove this autodj" aria-label="Remove autodj ${escapeHtml(a.mount)}">×</button>
+        <span class="mount-row-edit">EDIT →</span>
+      </div>
+    `;
+  },
+
+  renderAdjConfirmRemoveRow(a, idx) {
+    return `
+      <div class="mount-row mount-row-confirm" data-confirm-idx="${idx}" role="alertdialog">
+        <span class="mount-row-path">${escapeHtml(a.mount || '(unnamed autodj)')}</span>
+        <span class="mount-row-confirm-msg">Remove this autodj?</span>
+        <button type="button" class="btn btn-ghost mount-row-confirm-cancel" data-adj-action="cancel-remove">CANCEL</button>
+        <button type="button" class="btn btn-danger mount-row-confirm-ok" data-adj-action="confirm-remove" data-idx="${idx}">REMOVE</button>
+      </div>
+    `;
+  },
+
+  renderAdjCardForm(a, idx) {
+    return `
+      <fieldset class="mount-edit-card" data-adj-idx="${idx}">
+        <legend class="mount-edit-card-title">
+          <span class="mount-edit-card-index">#${idx + 1}</span>
+          <span class="mount-edit-card-path">${escapeHtml(a.mount || '(new autodj)')}</span>
+          <button type="button" class="btn btn-ghost mount-edit-card-remove" data-adj-action="remove" data-idx="${idx}">REMOVE</button>
+        </legend>
+
+        ${adjTextField(idx, 'mount', 'PATH', a.mount, { required: true, placeholder: '/lofi' })}
+        ${adjTextField(idx, 'folder', 'FOLDER', a.folder,
+            { required: true, placeholder: '/var/lib/rustyice/lofi' })}
+
+        <div class="config-field" data-field="enabled">
+          <div class="config-field-label">
+            <label for="cf-a${idx}-enabled">ENABLED</label>
+          </div>
+          <label class="toggle" for="cf-a${idx}-enabled">
+            <input id="cf-a${idx}-enabled" name="enabled" type="checkbox"${a.enabled ? ' checked' : ''}>
+            <span class="toggle-track"></span>
+          </label>
+          <span class="config-field-hint">Disable to stop playback without removing the entry.</span>
+        </div>
+
+        <div class="config-field" data-field="loop">
+          <div class="config-field-label">
+            <label for="cf-a${idx}-loop">LOOP</label>
+          </div>
+          <label class="toggle" for="cf-a${idx}-loop">
+            <input id="cf-a${idx}-loop" name="loop" type="checkbox"${a.loop ? ' checked' : ''}>
+            <span class="toggle-track"></span>
+          </label>
+          <span class="config-field-hint">Restart the playlist when it ends.</span>
+        </div>
+
+        ${adjSelectField(idx, 'order', 'ORDER', a.order, ['shuffle', 'sequential'])}
+
+        ${adjTextField(idx, 'name', 'NAME', a.name)}
+        ${adjTextField(idx, 'description', 'DESCRIPTION', a.description)}
+        ${adjTextField(idx, 'genre', 'GENRE', a.genre)}
+        ${adjTextField(idx, 'url', 'URL', a.url)}
+
+        ${adjNumberField(idx, 'max_listeners', 'MAX LISTENERS', a.max_listeners,
+            { min: 1, hint: 'blank = global' })}
+        ${adjNumberField(idx, 'burst_size', 'BURST SIZE', a.burst_size,
+            { min: 0, hint: 'blank = global' })}
+
+        <fieldset class="adj-transcode-group">
+          <legend class="adj-transcode-title">TRANSCODE</legend>
+          ${adjSelectField(idx, 'tc_format', 'FORMAT', a.transcode.format, ['mp3', 'vorbis'])}
+          ${adjNumberField(idx, 'tc_sample_rate', 'SAMPLE RATE', a.transcode.sample_rate, { min: 1, hint: 'Hz' })}
+          ${adjNumberField(idx, 'tc_bitrate_kbps', 'BITRATE', a.transcode.bitrate_kbps, { min: 1, hint: 'kbps' })}
+        </fieldset>
+
+        <div class="config-form-actions">
+          <button type="button" class="btn btn-ghost"   data-adj-action="cancel-edit">CANCEL</button>
+          <button type="button" class="btn btn-primary" data-adj-action="save-edit">SAVE</button>
+        </div>
+      </fieldset>
+    `;
+  },
+
+  bindAdjPane() {
+    const list = $('adj-list');
+    const add = $('adj-add');
+
+    list.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('[data-adj-action="remove"]');
+      const confirmRemoveBtn = e.target.closest('[data-adj-action="confirm-remove"]');
+      const cancelRemoveBtn = e.target.closest('[data-adj-action="cancel-remove"]');
+      const saveBtn = e.target.closest('[data-adj-action="save-edit"]');
+      const cancelBtn = e.target.closest('[data-adj-action="cancel-edit"]');
+      const editBtn = removeBtn || confirmRemoveBtn || cancelRemoveBtn || saveBtn || cancelBtn
+        ? null
+        : e.target.closest('[data-adj-action="edit"]');
+
+      if (removeBtn) {
+        this.adjPendingRemoveIdx = Number(removeBtn.dataset.idx);
+        this.drawAdjPane();
+        const ok = list.querySelector('[data-adj-action="confirm-remove"]');
+        if (ok) ok.focus();
+        return;
+      }
+      if (cancelRemoveBtn) {
+        this.adjPendingRemoveIdx = null;
+        this.drawAdjPane();
+        return;
+      }
+      if (confirmRemoveBtn) {
+        const idx = Number(confirmRemoveBtn.dataset.idx);
+        this.adjPendingRemoveIdx = null;
+        this.removeAdjAtIndex(idx);
+        return;
+      }
+      if (editBtn) {
+        if (this.adjEditingIdx != null) return;
+        this.adjEditingIdx = Number(editBtn.dataset.idx);
+        this.drawAdjPane();
+        const m = $(`cf-a${this.adjEditingIdx}-mount`);
+        if (m) m.focus();
+        return;
+      }
+      if (cancelBtn) {
+        const idx = this.adjEditingIdx;
+        const original = this.current.autodjs?.[idx];
+        if (original) {
+          this.adjWorking[idx] = this.adjToWorking(original);
+        } else {
+          this.adjWorking.splice(idx, 1);
+        }
+        this.adjEditingIdx = null;
+        this.drawAdjPane();
+        pushToast('Edit cancelled.', 'success');
+        return;
+      }
+      if (saveBtn) {
+        this.saveCurrentAdjEdit();
+        return;
+      }
+    });
+
+    list.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.adjPendingRemoveIdx != null) {
+        e.preventDefault();
+        this.adjPendingRemoveIdx = null;
+        this.drawAdjPane();
+        return;
+      }
+      if (e.target.closest('button')) return;
+      const row = e.target.closest('[data-adj-action="edit"]');
+      if (!row) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        row.click();
+      }
+    });
+
+    add.addEventListener('click', () => {
+      if (this.adjEditingIdx != null) return;
+      this.adjWorking.push({
+        mount: '',
+        folder: '',
+        enabled: true,
+        loop: true,
+        order: 'shuffle',
+        name: '',
+        description: '',
+        genre: '',
+        url: '',
+        max_listeners: null,
+        burst_size: null,
+        transcode: { format: 'mp3', sample_rate: 44100, bitrate_kbps: 128 },
+      });
+      this.adjEditingIdx = this.adjWorking.length - 1;
+      this.drawAdjPane();
+      const m = $(`cf-a${this.adjEditingIdx}-mount`);
+      if (m) m.focus();
+    });
+  },
+
+  removeAdjAtIndex(idx) {
+    const next = this.adjWorking.slice();
+    next.splice(idx, 1);
+    this.persistAdj(next, { successMessage: 'AutoDJ removed.' });
+  },
+
+  saveCurrentAdjEdit() {
+    const idx = this.adjEditingIdx;
+    if (idx == null) return;
+    this.clearFieldErrors();
+    this.adjWorking[idx] = this.readAdjFromDom(idx);
+    if (!this.adjWorking[idx].mount) {
+      this.markFieldError(`autodjs[${idx}].mount`, 'must be non-empty');
+      return;
+    }
+    if (!this.adjWorking[idx].folder) {
+      this.markFieldError(`autodjs[${idx}].folder`, 'must be non-empty');
+      return;
+    }
+    this.persistAdj(this.adjWorking, { successMessage: 'AutoDJ saved.' });
+  },
+
+  readAdjFromDom(idx) {
+    const v = (k) => $(`cf-a${idx}-${k}`)?.value ?? '';
+    const num = (k) => {
+      const s = v(k).trim();
+      return s === '' ? null : Number(s);
+    };
+    return {
+      mount: v('mount').trim(),
+      folder: v('folder').trim(),
+      enabled: $(`cf-a${idx}-enabled`)?.checked ?? true,
+      loop: $(`cf-a${idx}-loop`)?.checked ?? true,
+      order: v('order') || 'shuffle',
+      name: v('name').trim(),
+      description: v('description').trim(),
+      genre: v('genre').trim(),
+      url: v('url').trim(),
+      max_listeners: num('max_listeners'),
+      burst_size: num('burst_size'),
+      transcode: {
+        format: v('tc_format') || 'mp3',
+        sample_rate: Number(v('tc_sample_rate')) || 44100,
+        bitrate_kbps: Number(v('tc_bitrate_kbps')) || 128,
+      },
+    };
+  },
+
+  adjWorkingToPutBody(a) {
+    const body = {
+      mount: a.mount,
+      folder: a.folder,
+      enabled: a.enabled,
+      // JSON key matches the TOML field name.
+      loop: a.loop,
+      order: a.order,
+      transcode: a.transcode,
+    };
+    if (a.name) body.name = a.name;
+    if (a.description) body.description = a.description;
+    if (a.genre) body.genre = a.genre;
+    if (a.url) body.url = a.url;
+    if (a.max_listeners != null) body.max_listeners = a.max_listeners;
+    if (a.burst_size != null) body.burst_size = a.burst_size;
+    return body;
+  },
+
+  async persistAdj(workingList, { successMessage }) {
+    const body = { autodjs: workingList.map((a) => this.adjWorkingToPutBody(a)) };
+    try {
+      const res = await fetch('/api/config/autodjs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) { location.hash = ''; return; }
+      const payload = await res.json().catch(() => null);
+      if (res.status === 200) {
+        if (payload) {
+          this.current = {
+            ...this.current,
+            autodjs: payload.autodjs,
+            path: payload.path,
+            source: payload.source,
+          };
+        }
+        this.renderAutoDjs();
+        const warnings = payload?.applied_warnings || [];
+        if (warnings.length) {
+          this.showBanner(`Saved. ${warnings.join(' · ')}`, 'warning');
+          pushToast(`${successMessage} Restart required.`, 'warning', 4000);
+        } else {
+          pushToast(successMessage, 'success');
+        }
+      } else if ((res.status === 400 || res.status === 422) && payload?.field) {
+        this.markFieldError(payload.field, payload.error || 'invalid value');
+      } else if (res.status === 500 && payload?.disk_written) {
+        this.showBanner(
+          'Saved to disk, but apply failed. Running server still uses the previous config; restart to load the new file.',
+          'error',
+        );
+      } else {
+        this.showBanner(`Save failed: ${payload?.error || res.statusText}`, 'error');
+      }
+    } catch (err) {
+      this.showBanner(`Save failed: ${err.message}`, 'error');
+    }
+  },
 };
 
 // ─── mounts editor helpers (free functions, used by template literals) ───
@@ -1641,6 +1994,51 @@ function relaySelectField(idx, name, label, value, options) {
         <label for="cf-r${idx}-${name}">${label}</label>
       </div>
       <select id="cf-r${idx}-${name}" name="${name}">${opts}</select>
+      <span></span>
+    </div>
+  `;
+}
+
+// ─── autodjs editor helpers (separate `cf-a${idx}-*` ID namespace) ───────
+function adjTextField(idx, name, label, value, opts = {}) {
+  const type = opts.type || 'text';
+  const placeholder = opts.placeholder ? ` placeholder="${escapeHtml(opts.placeholder)}"` : '';
+  const required = opts.required ? ' required' : '';
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-a${idx}-${name}">${label}</label>
+      </div>
+      <input id="cf-a${idx}-${name}" name="${name}" type="${type}" value="${escapeHtml(String(value ?? ''))}"${placeholder}${required}>
+      <span></span>
+    </div>
+  `;
+}
+
+function adjNumberField(idx, name, label, value, opts = {}) {
+  const min = opts.min != null ? ` min="${opts.min}"` : '';
+  const hint = opts.hint ? `<span class="config-field-hint">${escapeHtml(opts.hint)}</span>` : '<span></span>';
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-a${idx}-${name}">${label}</label>
+      </div>
+      <input id="cf-a${idx}-${name}" name="${name}" type="number" value="${escapeHtml(String(value ?? ''))}"${min}>
+      ${hint}
+    </div>
+  `;
+}
+
+function adjSelectField(idx, name, label, value, options) {
+  const opts = options
+    .map((o) => `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`)
+    .join('');
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-a${idx}-${name}">${label}</label>
+      </div>
+      <select id="cf-a${idx}-${name}" name="${name}">${opts}</select>
       <span></span>
     </div>
   `;

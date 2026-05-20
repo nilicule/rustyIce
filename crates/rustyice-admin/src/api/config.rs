@@ -90,9 +90,9 @@ pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
 // ─── PUT /api/config/server ────────────────────────────────────────────────
 
 use crate::config_write::{
-    self, AuthSubPatch, LimitsSubPatch, LoggingSubPatch, MountSubPatch, MountsPatch,
-    RelaySubPatch, RelaysPatch, ServerPatch as WritePatch, ServerSubPatch, TranscodePatch,
-    TranscodeSubPatch, WriteError,
+    self, AuthSubPatch, AutoDjSubPatch, AutoDjsPatch, LimitsSubPatch, LoggingSubPatch,
+    MountSubPatch, MountsPatch, RelaySubPatch, RelaysPatch, ServerPatch as WritePatch,
+    ServerSubPatch, TranscodePatch, TranscodeSubPatch, WriteError,
 };
 use rustyice_core::config::{LogFormat, TranscodeFormat};
 use serde::Deserialize;
@@ -440,6 +440,133 @@ pub async fn put_mounts(
 
     persist_and_apply(&state, "mounts", candidate, |doc| {
         config_write::apply_mounts_patch(doc, &patch);
+    })
+    .await
+}
+
+// ─── PUT /api/config/autodjs ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct AutoDjsPutBody {
+    pub autodjs: Vec<AutoDjSubBody>,
+}
+
+#[derive(Deserialize)]
+pub struct AutoDjSubBody {
+    pub mount: String,
+    pub folder: String,
+    #[serde(default = "default_true_autodj_body")]
+    pub enabled: bool,
+    /// JSON-side field is `loop` (matching the TOML key). Renamed in Rust
+    /// because `loop` is reserved.
+    #[serde(rename = "loop", default = "default_true_autodj_body")]
+    pub loop_playlist: bool,
+    #[serde(default = "default_order_body")]
+    pub order: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub max_listeners: Option<u32>,
+    #[serde(default)]
+    pub burst_size: Option<u32>,
+    pub transcode: TranscodeSubBody,
+}
+
+fn default_true_autodj_body() -> bool {
+    true
+}
+fn default_order_body() -> String {
+    "shuffle".to_string()
+}
+
+pub async fn put_autodjs(
+    State(state): State<AdminState>,
+    Json(body): Json<AutoDjsPutBody>,
+) -> impl IntoResponse {
+    let patch = AutoDjsPatch {
+        autodjs: body
+            .autodjs
+            .into_iter()
+            .map(|a| AutoDjSubPatch {
+                mount: a.mount,
+                folder: a.folder,
+                enabled: a.enabled,
+                loop_playlist: a.loop_playlist,
+                order: a.order,
+                name: a.name,
+                description: a.description,
+                genre: a.genre,
+                url: a.url,
+                max_listeners: a.max_listeners,
+                burst_size: a.burst_size,
+                transcode: TranscodeSubPatch {
+                    format: a.transcode.format,
+                    sample_rate: a.transcode.sample_rate,
+                    bitrate_kbps: a.transcode.bitrate_kbps,
+                },
+            })
+            .collect(),
+    };
+
+    if let Err(WriteError::Validate { field, message }) =
+        config_write::validate_autodjs_patch(&patch)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: message, field: Some(field), disk_written: false }),
+        )
+            .into_response();
+    }
+
+    let current = state.config.load_full();
+    let mut candidate: Config = (*current).clone();
+    candidate.autodjs = patch
+        .autodjs
+        .iter()
+        .map(|a| AutoDjConfig {
+            mount: a.mount.clone(),
+            folder: std::path::PathBuf::from(&a.folder),
+            name: a.name.clone(),
+            description: a.description.clone(),
+            genre: a.genre.clone(),
+            url: a.url.clone(),
+            enabled: a.enabled,
+            loop_playlist: a.loop_playlist,
+            order: match a.order.as_str() {
+                "sequential" => rustyice_core::config::Order::Sequential,
+                _ => rustyice_core::config::Order::Shuffle,
+            },
+            max_listeners: a.max_listeners,
+            burst_size: a.burst_size,
+            transcode: TranscodeConfig {
+                format: match a.transcode.format.as_str() {
+                    "mp3" => TranscodeFormat::Mp3,
+                    "vorbis" => TranscodeFormat::Vorbis,
+                    _ => unreachable!("validated above"),
+                },
+                sample_rate: a.transcode.sample_rate,
+                bitrate_kbps: a.transcode.bitrate_kbps,
+            },
+        })
+        .collect();
+
+    // Cross-section: no path collisions with mounts/relays.
+    if let Err(msg) = candidate.validate_paths() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: msg, field: None, disk_written: false }),
+        )
+            .into_response();
+    }
+
+    persist_and_apply(&state, "autodjs", candidate, |doc| {
+        config_write::apply_autodjs_patch(doc, &patch);
     })
     .await
 }

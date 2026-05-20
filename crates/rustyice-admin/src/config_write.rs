@@ -325,6 +325,172 @@ pub fn validate_mounts_patch(p: &MountsPatch) -> Result<(), WriteError> {
     Ok(())
 }
 
+// ─── AutoDJs section ──────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct AutoDjsPatch {
+    pub autodjs: Vec<AutoDjSubPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AutoDjSubPatch {
+    pub mount: String,
+    pub folder: String,
+    #[serde(default = "default_true_autodj")]
+    pub enabled: bool,
+    /// TOML field is `loop` — the deserializer receives it as `loop_playlist`
+    /// because `loop` is reserved in Rust. The writer below emits `loop`.
+    #[serde(rename = "loop", default = "default_true_autodj")]
+    pub loop_playlist: bool,
+    #[serde(default = "default_order_str")]
+    pub order: String, // "shuffle" or "sequential"
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub max_listeners: Option<u32>,
+    #[serde(default)]
+    pub burst_size: Option<u32>,
+    /// Required — every autodj has a transcode block in the on-disk schema.
+    pub transcode: TranscodeSubPatch,
+}
+
+fn default_true_autodj() -> bool {
+    true
+}
+
+fn default_order_str() -> String {
+    "shuffle".to_string()
+}
+
+/// # Errors
+/// Returns `WriteError::Validate` for empty/duplicate mount paths, empty
+/// folders, bad `order` values, or invalid per-autodj transcode fields.
+pub fn validate_autodjs_patch(p: &AutoDjsPatch) -> Result<(), WriteError> {
+    let mut seen = std::collections::HashSet::new();
+    for (idx, a) in p.autodjs.iter().enumerate() {
+        let prefix = format!("autodjs[{idx}]");
+        if a.mount.trim().is_empty() {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.mount"),
+                message: "must be non-empty".into(),
+            });
+        }
+        if !a.mount.starts_with('/') {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.mount"),
+                message: "must start with \"/\"".into(),
+            });
+        }
+        if !seen.insert(a.mount.clone()) {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.mount"),
+                message: format!("duplicate autodj mount path: {}", a.mount),
+            });
+        }
+        if a.folder.trim().is_empty() {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.folder"),
+                message: "must be non-empty".into(),
+            });
+        }
+        if a.order != "shuffle" && a.order != "sequential" {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.order"),
+                message: "must be \"shuffle\" or \"sequential\"".into(),
+            });
+        }
+        if let Some(0) = a.max_listeners {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.max_listeners"),
+                message: "must be greater than 0 when set".into(),
+            });
+        }
+        if let Some(b) = a.burst_size {
+            const MAX_BURST: u32 = 16 * 1024 * 1024;
+            if b > MAX_BURST {
+                return Err(WriteError::Validate {
+                    field: format!("{prefix}.burst_size"),
+                    message: format!("must be <= {MAX_BURST} bytes (16 MiB)"),
+                });
+            }
+        }
+        // Per-autodj transcode is required, not optional — always validate.
+        let wrap = TranscodePatch {
+            transcode: Some(TranscodeSubPatch {
+                format: a.transcode.format.clone(),
+                sample_rate: a.transcode.sample_rate,
+                bitrate_kbps: a.transcode.bitrate_kbps,
+            }),
+        };
+        if let Err(WriteError::Validate { field, message }) = validate_transcode_patch(&wrap) {
+            let sub = field.strip_prefix("transcode.").unwrap_or(&field);
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.transcode.{sub}"),
+                message,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Replace the `[[autodjs]]` array of tables in `doc`. Top-of-file and
+/// other sections' comments survive; comments inside individual
+/// `[[autodjs]]` entries are not preserved.
+pub fn apply_autodjs_patch(doc: &mut DocumentMut, p: &AutoDjsPatch) {
+    if p.autodjs.is_empty() {
+        doc.as_table_mut().remove("autodjs");
+        return;
+    }
+    let mut aot = toml_edit::ArrayOfTables::new();
+    for a in &p.autodjs {
+        let mut t = toml_edit::Table::new();
+        t["mount"] = value(a.mount.clone());
+        t["folder"] = value(a.folder.clone());
+        if !a.enabled {
+            t["enabled"] = value(false);
+        }
+        if !a.loop_playlist {
+            // Default is true; only emit when explicitly false.
+            t["loop"] = value(false);
+        }
+        // Always emit order so the file is self-explanatory.
+        t["order"] = value(a.order.clone());
+        if let Some(s) = &a.name {
+            t["name"] = value(s.clone());
+        }
+        if let Some(s) = &a.description {
+            t["description"] = value(s.clone());
+        }
+        if let Some(s) = &a.genre {
+            t["genre"] = value(s.clone());
+        }
+        if let Some(s) = &a.url {
+            t["url"] = value(s.clone());
+        }
+        if let Some(n) = a.max_listeners {
+            t["max_listeners"] = value(i64::from(n));
+        }
+        if let Some(b) = a.burst_size {
+            t["burst_size"] = value(i64::from(b));
+        }
+        // Required nested transcode table.
+        let mut sub = toml_edit::Table::new();
+        sub["format"] = value(a.transcode.format.clone());
+        sub["sample_rate"] = value(i64::from(a.transcode.sample_rate));
+        sub["bitrate_kbps"] = value(i64::from(a.transcode.bitrate_kbps));
+        sub.set_implicit(false);
+        t.insert("transcode", Item::Table(sub));
+        aot.push(t);
+    }
+    doc.insert("autodjs", Item::ArrayOfTables(aot));
+}
+
 // ─── Relays section ───────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1108,6 +1274,120 @@ burst_size            = 65536
             ],
         };
         assert!(validate_mounts_patch(&patch).is_ok());
+    }
+
+    // ── AutoDJs ────────────────────────────────────────────────────────────
+
+    fn basic_autodj(mount: &str) -> AutoDjSubPatch {
+        AutoDjSubPatch {
+            mount: mount.into(),
+            folder: "/var/lib/rustyice/music".into(),
+            enabled: true,
+            loop_playlist: true,
+            order: "shuffle".into(),
+            name: None,
+            description: None,
+            genre: None,
+            url: None,
+            max_listeners: None,
+            burst_size: None,
+            transcode: TranscodeSubPatch {
+                format: "mp3".into(),
+                sample_rate: 44_100,
+                bitrate_kbps: 128,
+            },
+        }
+    }
+
+    #[test]
+    fn autodjs_patch_writes_block_with_required_transcode() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        apply_autodjs_patch(
+            &mut doc,
+            &AutoDjsPatch { autodjs: vec![basic_autodj("/auto")] },
+        );
+        let out = doc.to_string();
+        assert!(out.contains("[[autodjs]]"));
+        assert!(out.contains(r#"mount = "/auto""#));
+        assert!(out.contains(r#"folder = "/var/lib/rustyice/music""#));
+        assert!(out.contains(r#"order = "shuffle""#));
+        assert!(out.contains("[autodjs.transcode]"));
+        assert!(out.contains(r#"format = "mp3""#));
+        // enabled=true / loop=true are defaults and stay implicit.
+        assert!(!out.contains("enabled = true"));
+        assert!(!out.contains("loop = true"));
+    }
+
+    #[test]
+    fn autodjs_patch_emits_disabled_and_no_loop_explicitly() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        let mut a = basic_autodj("/auto");
+        a.enabled = false;
+        a.loop_playlist = false;
+        a.order = "sequential".into();
+        apply_autodjs_patch(&mut doc, &AutoDjsPatch { autodjs: vec![a] });
+        let out = doc.to_string();
+        assert!(out.contains("enabled = false"));
+        assert!(out.contains("loop = false"));
+        assert!(out.contains(r#"order = "sequential""#));
+    }
+
+    #[test]
+    fn autodjs_patch_with_empty_list_removes_block() {
+        let seeded = doc_without_mounts().to_string()
+            + "\n[[autodjs]]\nmount = \"/old\"\nfolder = \"/tmp\"\n[autodjs.transcode]\nformat = \"mp3\"\nsample_rate = 44100\nbitrate_kbps = 128\n";
+        let mut doc: DocumentMut = seeded.parse().unwrap();
+        apply_autodjs_patch(&mut doc, &AutoDjsPatch { autodjs: vec![] });
+        let out = doc.to_string();
+        assert!(!out.contains("[[autodjs]]"));
+    }
+
+    #[test]
+    fn autodjs_validate_rejects_duplicate_mount_paths() {
+        let patch = AutoDjsPatch {
+            autodjs: vec![basic_autodj("/dup"), basic_autodj("/dup")],
+        };
+        let err = validate_autodjs_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "autodjs[1].mount"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn autodjs_validate_rejects_empty_folder() {
+        let mut a = basic_autodj("/a");
+        a.folder = "".into();
+        let err = validate_autodjs_patch(&AutoDjsPatch { autodjs: vec![a] }).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "autodjs[0].folder"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn autodjs_validate_rejects_bad_order() {
+        let mut a = basic_autodj("/a");
+        a.order = "random".into();
+        let err = validate_autodjs_patch(&AutoDjsPatch { autodjs: vec![a] }).unwrap_err();
+        match err {
+            WriteError::Validate { field, message } => {
+                assert_eq!(field, "autodjs[0].order");
+                assert!(message.contains("shuffle"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn autodjs_validate_rejects_bad_transcode_format() {
+        let mut a = basic_autodj("/a");
+        a.transcode.format = "flac".into();
+        let err = validate_autodjs_patch(&AutoDjsPatch { autodjs: vec![a] }).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "autodjs[0].transcode.format"),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     // ── Relays ─────────────────────────────────────────────────────────────
