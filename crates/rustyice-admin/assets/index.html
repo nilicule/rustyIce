@@ -70,37 +70,33 @@
 
     <!-- ============== Admin view ============== -->
     <section id="view-admin" class="view hidden">
-      <div class="admin-shell">
-        <nav class="admin-side-nav" aria-label="Admin navigation">
-          <ul class="admin-side-nav-list">
-            <li><a href="#admin"        data-admin-section="dashboard" class="active">DASHBOARD</a></li>
-            <li><a href="#admin/config" data-admin-section="config">CONFIG</a></li>
-          </ul>
-        </nav>
+      <nav class="page-side-nav" aria-label="Admin navigation">
+        <ul class="page-side-nav-list">
+          <li><a href="#admin"        data-admin-section="dashboard" class="active">DASHBOARD</a></li>
+          <li><a href="#admin/config" data-admin-section="config">CONFIG</a></li>
+        </ul>
+      </nav>
 
-        <div class="admin-main">
-          <div class="admin-header">
-            <div>
-              <p class="eyebrow"><span class="dash">—</span> OPERATOR CONSOLE</p>
-              <h2 class="admin-title">Admin</h2>
-            </div>
-            <div class="admin-user">
-              <span id="admin-user-label">signed in</span>
-              <a href="#" id="logout-btn" class="btn btn-ghost">SIGN OUT</a>
-            </div>
-          </div>
-
-          <div class="admin-stats">
-            <div class="stat"><span id="adm-stat-listeners" class="stat-value">0</span><span class="stat-label">LISTENERS</span></div>
-            <div class="stat"><span id="adm-stat-mounts" class="stat-value">0</span><span class="stat-label">ACTIVE MOUNTS</span></div>
-            <div class="stat"><span id="adm-stat-uptime" class="stat-value">—</span><span class="stat-label">UPTIME</span></div>
-            <div class="stat"><span id="adm-stat-bw-in" class="stat-value">—</span><span class="stat-label">INBOUND</span></div>
-            <div class="stat"><span id="adm-stat-bw-out" class="stat-value">—</span><span class="stat-label">OUTBOUND</span></div>
-          </div>
-
-          <div id="admin-mounts" class="admin-mounts"></div>
+      <div class="admin-header">
+        <div>
+          <p class="eyebrow"><span class="dash">—</span> OPERATOR CONSOLE</p>
+          <h2 class="admin-title">Admin</h2>
+        </div>
+        <div class="admin-user">
+          <span id="admin-user-label">signed in</span>
+          <a href="#" id="logout-btn" class="btn btn-ghost">SIGN OUT</a>
         </div>
       </div>
+
+      <div class="admin-stats">
+        <div class="stat"><span id="adm-stat-listeners" class="stat-value">0</span><span class="stat-label">LISTENERS</span></div>
+        <div class="stat"><span id="adm-stat-mounts" class="stat-value">0</span><span class="stat-label">ACTIVE MOUNTS</span></div>
+        <div class="stat"><span id="adm-stat-uptime" class="stat-value">—</span><span class="stat-label">UPTIME</span></div>
+        <div class="stat"><span id="adm-stat-bw-in" class="stat-value">—</span><span class="stat-label">INBOUND</span></div>
+        <div class="stat"><span id="adm-stat-bw-out" class="stat-value">—</span><span class="stat-label">OUTBOUND</span></div>
+      </div>
+
+      <div id="admin-mounts" class="admin-mounts"></div>
     </section>
 
     <!-- ============== Mount detail view ============== -->

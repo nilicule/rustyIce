@@ -360,17 +360,17 @@ a.stream-row:hover .stream-path::before {
 .btn-sm { padding: .35rem .8rem; font-size: .7rem; letter-spacing: .12em; }
 
 /* ─── admin view ─────────────────────────────────────────────────────── */
-.admin-shell {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 3rem;
-  align-items: start;
+
+/* Page-level vertical nav pinned to the viewport's left edge, aligned
+   under the `// rustyice` wordmark in the topbar. Lives outside `main`
+   so it occupies the empty page margin rather than crowding content. */
+.page-side-nav {
+  position: fixed;
+  top: 5.5rem;       /* clears the topbar (~3.5rem) + a little breathing room */
+  left: 2rem;        /* matches .topbar padding so it lines up with the brand */
+  z-index: 5;
 }
-.admin-side-nav {
-  position: sticky;
-  top: 2rem;
-}
-.admin-side-nav-list {
+.page-side-nav-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -378,9 +378,9 @@ a.stream-row:hover .stream-path::before {
   flex-direction: column;
   gap: .25rem;
 }
-.admin-side-nav a {
+.page-side-nav a {
   display: block;
-  padding: .5rem .75rem .5rem 1rem;
+  padding: .4rem .75rem .4rem 1rem;
   font-family: var(--mono);
   font-size: .85rem;
   letter-spacing: .12em;
@@ -388,12 +388,11 @@ a.stream-row:hover .stream-path::before {
   text-decoration: none;
   border-left: 3px solid transparent;
 }
-.admin-side-nav a:hover { color: var(--fg); }
-.admin-side-nav a.active {
+.page-side-nav a:hover { color: var(--fg); }
+.page-side-nav a.active {
   color: var(--accent);
   border-left-color: var(--accent);
 }
-.admin-main { min-width: 0; }
 
 .admin-header {
   display: flex;
@@ -838,11 +837,15 @@ a.stream-row:hover .stream-path::before {
 }
 
 @media (max-width: 640px) {
-  .admin-shell { grid-template-columns: 1fr; gap: 1.5rem; }
-  .admin-side-nav { position: static; }
-  .admin-side-nav-list { flex-direction: row; overflow-x: auto; }
-  .admin-side-nav a { border-left: none; border-bottom: 3px solid transparent; }
-  .admin-side-nav a.active { border-left: none; border-bottom-color: var(--accent); }
+  /* Below the breakpoint the page is too narrow to spare a left rail —
+     drop the fixed nav into the document flow above the admin content. */
+  .page-side-nav {
+    position: static;
+    margin: 0 0 1.5rem;
+  }
+  .page-side-nav-list { flex-direction: row; overflow-x: auto; }
+  .page-side-nav a { border-left: none; border-bottom: 3px solid transparent; }
+  .page-side-nav a.active { border-left: none; border-bottom-color: var(--accent); }
   .config-grid { grid-template-columns: 1fr; gap: 1.5rem; }
   .config-nav { position: static; flex-direction: row; min-height: 0; overflow-x: auto; }
   .config-nav-list { flex-direction: row; }
