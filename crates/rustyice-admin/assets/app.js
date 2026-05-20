@@ -1614,15 +1614,23 @@ const configView = {
   },
 
   renderUserCollapsedRow(u, idx) {
+    const isSelf = u.username && u.username === state.user;
+    const selfBadge = isSelf ? '<span class="mount-row-meta">YOU</span>' : '';
     const roleBadge = u.role === 'admin'
       ? '<span class="mount-row-meta">ADMIN</span>'
       : '<span class="mount-row-meta relay-row-off">OPERATOR</span>';
+    // Hide the remove button on the logged-in user's own row. The server
+    // still rejects self-deletion as a backstop; this just keeps the UI
+    // from offering an action that will fail.
+    const removeBtn = isSelf
+      ? '<span class="mount-row-remove mount-row-remove-placeholder" aria-hidden="true"></span>'
+      : `<button type="button" class="mount-row-remove" data-user-action="remove" data-idx="${idx}" title="Remove this user" aria-label="Remove user ${escapeHtml(u.username)}">×</button>`;
     return `
       <div class="mount-row" data-user-action="edit" data-idx="${idx}" role="button" tabindex="0">
         <span class="mount-row-path">${escapeHtml(u.username || '(unnamed)')}</span>
         <span class="mount-row-summary"></span>
-        <span class="mount-row-badges">${roleBadge}</span>
-        <button type="button" class="mount-row-remove" data-user-action="remove" data-idx="${idx}" title="Remove this user" aria-label="Remove user ${escapeHtml(u.username)}">×</button>
+        <span class="mount-row-badges">${selfBadge}${roleBadge}</span>
+        ${removeBtn}
         <span class="mount-row-edit">EDIT →</span>
       </div>
     `;
@@ -1641,21 +1649,42 @@ const configView = {
 
   renderUserCardForm(u, idx) {
     const isNew = !this.current.auth?.users?.some((cur) => cur.username === u.username) || u.username === '';
+    const isSelf = u.username && u.username === state.user;
     const passwordPlaceholder = isNew ? '(required for new user)' : '(unchanged if blank)';
+    const removeBtn = isSelf
+      ? ''
+      : `<button type="button" class="btn btn-ghost mount-edit-card-remove" data-user-action="remove" data-idx="${idx}">REMOVE</button>`;
+    // Same idea for the role select: don't let the user demote their own
+    // account in the UI. (Server still enforces this independently.)
+    const roleHelp = isSelf
+      ? 'Locked — you can\'t change your own role. Have another admin do it.'
+      : 'Admins can edit server, transcode, and users. Operators are limited to mounts, relays, and autodjs.';
+    const roleField = isSelf
+      ? `
+        <div class="config-field" data-field="role">
+          <div class="config-field-label">
+            <label for="cf-u${idx}-role">ROLE</label>
+          </div>
+          <select id="cf-u${idx}-role" name="role" disabled>
+            <option value="admin" selected>admin</option>
+          </select>
+          <span></span>
+          <p class="config-field-help">${escapeHtml(roleHelp)}</p>
+        </div>
+      `
+      : userSelectField(idx, 'role', 'ROLE', u.role, ['admin', 'operator'], { help: roleHelp });
     return `
       <fieldset class="mount-edit-card" data-user-idx="${idx}">
         <legend class="mount-edit-card-title">
           <span class="mount-edit-card-index">#${idx + 1}</span>
           <span class="mount-edit-card-path">${escapeHtml(u.username || '(new user)')}</span>
-          <button type="button" class="btn btn-ghost mount-edit-card-remove" data-user-action="remove" data-idx="${idx}">REMOVE</button>
+          ${removeBtn}
         </legend>
 
         ${userTextField(idx, 'username', 'USERNAME', u.username, { required: true })}
         ${userTextField(idx, 'password', 'PASSWORD', '',
             { type: 'password', placeholder: passwordPlaceholder })}
-        ${userSelectField(idx, 'role', 'ROLE', u.role, ['admin', 'operator'], {
-            help: 'Admins can edit server, transcode, and users. Operators are limited to mounts, relays, and autodjs.',
-        })}
+        ${roleField}
 
         <div class="config-form-actions">
           <button type="button" class="btn btn-ghost"   data-user-action="cancel-edit">CANCEL</button>

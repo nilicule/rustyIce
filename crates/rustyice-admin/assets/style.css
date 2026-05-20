@@ -1096,12 +1096,15 @@ a.stream-row:hover .stream-path::before {
   justify-content: center;
   padding: 0;
 }
-.mount-row-remove:hover,
-.mount-row-remove:focus-visible {
+.mount-row-remove:hover:not(.mount-row-remove-placeholder),
+.mount-row-remove:focus-visible:not(.mount-row-remove-placeholder) {
   color: var(--danger, #d04a4a);
   border-color: var(--danger, #d04a4a);
   background: var(--danger-soft, rgba(208, 74, 74, .14));
   outline: none;
+}
+.mount-row-remove-placeholder {
+  pointer-events: none;
 }
 .mount-edit-card {
   border: 1px solid var(--line);
