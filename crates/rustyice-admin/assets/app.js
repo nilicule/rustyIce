@@ -426,9 +426,12 @@ const configView = {
         <fieldset class="config-group">
           <legend class="config-group-title">LIMITS</legend>
           ${this.field('max_listeners_global',   'MAX LISTENERS',   limits.max_listeners_global,   { type: 'number', min: 1 })}
-          ${this.field('ring_size',              'RING SIZE',       limits.ring_size,              { type: 'number', min: 1, restart: true })}
-          ${this.field('slow_listener_grace_s',  'SLOW GRACE (s)',  limits.slow_listener_grace_s,  { type: 'number', min: 0 })}
-          ${this.field('burst_size',             'BURST SIZE',      limits.burst_size,             { type: 'number', min: 0, hint: '0 disables burst' })}
+          ${this.field('ring_size',              'RING SIZE',       limits.ring_size,              { type: 'number', min: 1, restart: true,
+            help: 'Per-mount broadcast buffer depth (slots). Each slot holds one stream packet. Larger values give slow listeners more time to catch up at the cost of memory.' })}
+          ${this.field('slow_listener_grace_s',  'SLOW GRACE (s)',  limits.slow_listener_grace_s,  { type: 'number', min: 0,
+            help: 'How long a listener may lag behind the live edge before being disconnected. Increase if your audience has unstable connections.' })}
+          ${this.field('burst_size',             'BURST SIZE',      limits.burst_size,             { type: 'number', min: 0,
+            help: 'Bytes of recent audio replayed to each new listener so players start playback instantly instead of waiting for live data. Icecast-compatible; 0 disables.' })}
           ${this.field('source_max_kbps',        'SOURCE MAX KBPS', limits.source_max_kbps ?? '',  { type: 'number', min: 0, hint: 'blank = unlimited' })}
         </fieldset>
 
@@ -460,6 +463,7 @@ const configView = {
   field(name, label, value, opts = {}) {
     const restart = opts.restart ? '<span class="restart-badge">RESTART REQUIRED</span>' : '';
     const hint = opts.hint ? `<span class="config-field-hint">${escapeHtml(opts.hint)}</span>` : '';
+    const help = opts.help ? `<p class="config-field-help">${escapeHtml(opts.help)}</p>` : '';
     const min = opts.min != null ? ` min="${opts.min}"` : '';
     const idPrefix = opts.idPrefix || '';
     return `
@@ -467,6 +471,7 @@ const configView = {
         <label for="cf-${idPrefix}${name}">${label}</label>
         <input id="cf-${idPrefix}${name}" name="${name}" type="${opts.type}" value="${escapeHtml(String(value ?? ''))}"${min}>
         ${restart || hint || '<span></span>'}
+        ${help}
       </div>
     `;
   },

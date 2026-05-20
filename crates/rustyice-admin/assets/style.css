@@ -801,6 +801,17 @@ a.stream-row:hover .stream-path::before {
   font-size: .75rem;
   color: var(--fg-muted);
 }
+/* Multi-line explainer for non-obvious fields. Sits on its own row,
+   aligned under the input, sized small so it doesn't shout. */
+.config-field-help {
+  grid-column: 2 / -1;
+  margin: .35rem 0 0;
+  font-family: var(--mono);
+  font-size: .72rem;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  max-width: 44em;
+}
 .config-field-error {
   grid-column: 2 / span 2;
   font-family: var(--mono);
