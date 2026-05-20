@@ -905,7 +905,7 @@ const configView = {
       <div class="mount-row" data-action="edit" data-idx="${idx}" role="button" tabindex="0">
         <span class="mount-row-path">${escapeHtml(m.path || '(unnamed mount)')}</span>
         <span class="mount-row-summary">${escapeHtml(summary)}</span>
-        ${tc}
+        <span class="mount-row-badges">${tc}</span>
         <button type="button" class="mount-row-remove" data-action="remove" data-idx="${idx}" title="Remove this mount" aria-label="Remove mount ${escapeHtml(m.path)}">×</button>
         <span class="mount-row-edit">EDIT →</span>
       </div>
@@ -1251,7 +1251,7 @@ const configView = {
       <div class="mount-row" data-relay-action="edit" data-idx="${idx}" role="button" tabindex="0">
         <span class="mount-row-path">${escapeHtml(r.mount || '(unnamed relay)')}</span>
         <span class="mount-row-summary">${escapeHtml(summary)}</span>
-        ${offBadge}${tc}
+        <span class="mount-row-badges">${offBadge}${tc}</span>
         <button type="button" class="mount-row-remove" data-relay-action="remove" data-idx="${idx}" title="Remove this relay" aria-label="Remove relay ${escapeHtml(r.mount)}">×</button>
         <span class="mount-row-edit">EDIT →</span>
       </div>

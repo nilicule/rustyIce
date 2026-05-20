@@ -1026,6 +1026,16 @@ a.stream-row:hover .stream-path::before {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Single grid cell that holds zero or more badges. Keeps the row's
+   column count stable regardless of which (or how many) badges show,
+   so the × and EDIT → on the right stay vertically aligned across
+   rows. */
+.mount-row-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  justify-self: end;
+}
 .mount-row-meta {
   font-family: var(--mono);
   font-size: .7rem;
