@@ -206,16 +206,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let config_write_lock = Arc::new(tokio::sync::Mutex::new(()));
 
-    // Placeholder applier — Task 6 replaces this with one that calls
-    // `rustyice_server::config_reload::apply_config`.
-    struct NoopApplier;
+    // Applier closes over the same Arc-cloneable deps SIGHUP uses; each
+    // call rebuilds an `ApplyDeps` from the captured handles and delegates
+    // to `apply_config`.
+    struct AppApplier {
+        config: Arc<ArcSwap<Config>>,
+        auth: Arc<dyn rustyice_core::traits::AuthBackend + Send + Sync>,
+        mounts: rustyice_core::mount::MountRegistry,
+        autodjs: Arc<rustyice_server::config_reload::AutoDjRegistry>,
+        relays: Arc<rustyice_server::config_reload::RelayRegistry>,
+        app_state: rustyice_server::state::AppState,
+        shutdown: tokio_util::sync::CancellationToken,
+    }
+
     #[async_trait::async_trait]
-    impl rustyice_admin::api::config::ConfigApplier for NoopApplier {
-        async fn apply(&self, _: rustyice_core::config::Config) -> Result<Vec<String>, String> {
-            Err("config apply not wired yet".to_string())
+    impl rustyice_admin::api::config::ConfigApplier for AppApplier {
+        async fn apply(&self, new_cfg: Config) -> Result<Vec<String>, String> {
+            let deps = rustyice_server::config_reload::ApplyDeps {
+                config: &self.config,
+                auth: &self.auth,
+                mounts: &self.mounts,
+                autodjs: &self.autodjs,
+                relays: &self.relays,
+                app_state: &self.app_state,
+                shutdown: &self.shutdown,
+            };
+            match rustyice_server::config_reload::apply_config(new_cfg, deps).await {
+                Ok(out) => Ok(out.warnings),
+                Err(e) => Err(e.to_string()),
+            }
         }
     }
-    let config_applier: rustyice_admin::api::config::ConfigApplierRef = Arc::new(NoopApplier);
+
+    let config_applier: rustyice_admin::api::config::ConfigApplierRef = Arc::new(AppApplier {
+        config: shared_cfg.clone(),
+        auth: auth.clone(),
+        mounts: mounts.clone(),
+        autodjs: autodj_registry.clone(),
+        relays: relay_registry.clone(),
+        app_state: app_state.clone(),
+        shutdown: shutdown.clone(),
+    });
 
     let admin_state = app_state.admin_state(
         prom_handle,
