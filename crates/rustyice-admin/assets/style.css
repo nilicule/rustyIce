@@ -782,8 +782,14 @@ a.stream-row:hover .stream-path::before {
   outline: none;
   border-color: var(--accent);
 }
-/* Number inputs and small dropdowns shouldn't stretch to the full grid
-   cell width — the value is short and the giant box looks unbalanced. */
+/* Input fields shouldn't stretch to fill the full grid cell — values are
+   short and the giant boxes look unbalanced. Text gets a roomier cap
+   than numbers/selects to comfortably fit hostnames and bind addresses. */
+.config-field input[type="text"] {
+  max-width: 24rem;
+  justify-self: start;
+  width: 100%;
+}
 .config-field input[type="number"],
 .config-field select {
   max-width: 14rem;
