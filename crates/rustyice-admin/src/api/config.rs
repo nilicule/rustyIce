@@ -26,12 +26,15 @@ pub type ConfigApplierRef = Arc<dyn ConfigApplier>;
 
 const REDACTED: &str = "***";
 
+/// JSON shape returned to the client. Admin-only sections are `Option<>`
+/// and serialized as `null` (or omitted) when the requester is an operator,
+/// so the wire never carries server/transcode/users data to a non-admin.
 #[derive(Serialize)]
 pub struct ConfigResponse {
-    pub server: ServerConfig,
-    pub logging: LoggingConfig,
+    pub server: Option<ServerConfig>,
+    pub logging: Option<LoggingConfig>,
     pub auth: AuthConfig,
-    pub limits: LimitsConfig,
+    pub limits: Option<LimitsConfig>,
     pub mounts: Vec<MountConfig>,
     pub autodjs: Vec<AutoDjConfig>,
     pub relays: Vec<RelayConfig>,
@@ -60,31 +63,55 @@ fn redact(cfg: &Config) -> Config {
     out
 }
 
-fn build_config_response(cfg: &Config, state: &AdminState) -> ConfigResponse {
+fn build_config_response(cfg: &Config, state: &AdminState, is_admin: bool) -> ConfigResponse {
     let redacted = redact(cfg);
     let path_swap = state.config_path.load();
     let (path, source) = match path_swap.as_ref().as_ref() {
         Some(p) => (Some(p.display().to_string()), "file"),
         None => (None, "defaults"),
     };
-    ConfigResponse {
-        server: redacted.server,
-        logging: redacted.logging,
-        auth: redacted.auth,
-        limits: redacted.limits,
-        mounts: redacted.mounts,
-        autodjs: redacted.autodjs,
-        relays: redacted.relays,
-        tls: redacted.tls,
-        transcode: redacted.transcode,
-        path,
-        source,
+    if is_admin {
+        ConfigResponse {
+            server: Some(redacted.server),
+            logging: Some(redacted.logging),
+            auth: redacted.auth,
+            limits: Some(redacted.limits),
+            mounts: redacted.mounts,
+            autodjs: redacted.autodjs,
+            relays: redacted.relays,
+            tls: redacted.tls,
+            transcode: redacted.transcode,
+            path,
+            source,
+        }
+    } else {
+        // Operator view: scrub everything they're not allowed to see.
+        // mounts/relays/autodjs flow through so they can still edit those.
+        ConfigResponse {
+            server: None,
+            logging: None,
+            auth: AuthConfig { users: vec![], source_password: None },
+            limits: None,
+            mounts: redacted.mounts,
+            autodjs: redacted.autodjs,
+            relays: redacted.relays,
+            tls: None,
+            transcode: None,
+            path,
+            source,
+        }
     }
 }
 
-pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn get_config(
+    State(state): State<AdminState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let is_admin = crate::api::auth::session_role(&state, &headers)
+        .map(|(_, role)| role == "admin")
+        .unwrap_or(false);
     let cfg = state.config.load_full();
-    (StatusCode::OK, Json(build_config_response(&cfg, &state))).into_response()
+    (StatusCode::OK, Json(build_config_response(&cfg, &state, is_admin))).into_response()
 }
 
 // ─── PUT /api/config/server ────────────────────────────────────────────────
@@ -225,7 +252,8 @@ pub async fn put_server(
             .into_response();
     }
 
-    persist_and_apply(&state, "server", candidate, |doc| {
+    // The /server endpoint is admin-only by route gating; pass is_admin=true.
+    persist_and_apply(&state, "server", candidate, true, |doc| {
         config_write::apply_server_patch(doc, &patch);
     })
     .await
@@ -290,7 +318,8 @@ pub async fn put_transcode(
             .into_response();
     }
 
-    persist_and_apply(&state, "transcode", candidate, |doc| {
+    // Admin-only route.
+    persist_and_apply(&state, "transcode", candidate, true, |doc| {
         config_write::apply_transcode_patch(doc, &patch);
     })
     .await
@@ -329,8 +358,12 @@ pub struct MountSubBody {
 
 pub async fn put_mounts(
     State(state): State<AdminState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<MountsPutBody>,
 ) -> impl IntoResponse {
+    let is_admin = crate::api::auth::session_role(&state, &headers)
+        .map(|(_, role)| role == "admin")
+        .unwrap_or(false);
     // Map existing mount path → current source_password so we can keep
     // unchanged passwords without making the client re-enter them.
     let current = state.config.load_full();
@@ -438,7 +471,7 @@ pub async fn put_mounts(
             .into_response();
     }
 
-    persist_and_apply(&state, "mounts", candidate, |doc| {
+    persist_and_apply(&state, "mounts", candidate, is_admin, |doc| {
         config_write::apply_mounts_patch(doc, &patch);
     })
     .await
@@ -557,7 +590,8 @@ pub async fn put_users(
         })
         .collect();
 
-    persist_and_apply(&state, "users", candidate, |doc| {
+    // Admin-only route.
+    persist_and_apply(&state, "users", candidate, true, |doc| {
         config_write::apply_users_patch(doc, &patch);
     })
     .await
@@ -606,8 +640,12 @@ fn default_order_body() -> String {
 
 pub async fn put_autodjs(
     State(state): State<AdminState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<AutoDjsPutBody>,
 ) -> impl IntoResponse {
+    let is_admin = crate::api::auth::session_role(&state, &headers)
+        .map(|(_, role)| role == "admin")
+        .unwrap_or(false);
     let patch = AutoDjsPatch {
         autodjs: body
             .autodjs
@@ -684,7 +722,7 @@ pub async fn put_autodjs(
             .into_response();
     }
 
-    persist_and_apply(&state, "autodjs", candidate, |doc| {
+    persist_and_apply(&state, "autodjs", candidate, is_admin, |doc| {
         config_write::apply_autodjs_patch(doc, &patch);
     })
     .await
@@ -733,8 +771,12 @@ fn default_true_relay_enabled_body() -> bool {
 
 pub async fn put_relays(
     State(state): State<AdminState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<RelaysPutBody>,
 ) -> impl IntoResponse {
+    let is_admin = crate::api::auth::session_role(&state, &headers)
+        .map(|(_, role)| role == "admin")
+        .unwrap_or(false);
     // Map existing relay mount path → current password so we can keep
     // unchanged credentials without making the client re-enter them.
     let current = state.config.load_full();
@@ -820,7 +862,7 @@ pub async fn put_relays(
             .into_response();
     }
 
-    persist_and_apply(&state, "relays", candidate, |doc| {
+    persist_and_apply(&state, "relays", candidate, is_admin, |doc| {
         config_write::apply_relays_patch(doc, &patch);
     })
     .await
@@ -837,6 +879,7 @@ async fn persist_and_apply(
     state: &AdminState,
     section: &'static str,
     candidate: Config,
+    is_admin: bool,
     patch_doc: impl Fn(&mut DocumentMut),
 ) -> axum::response::Response {
     let _guard = state.config_write_lock.lock().await;
@@ -881,7 +924,7 @@ async fn persist_and_apply(
             }
             tracing::info!(section, "config saved via api");
             let cfg = state.config.load_full();
-            let resp_body = build_config_response(&cfg, state);
+            let resp_body = build_config_response(&cfg, state, is_admin);
             (
                 StatusCode::OK,
                 Json(PutSuccess { config: resp_body, applied_warnings: warnings }),

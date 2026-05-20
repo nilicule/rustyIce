@@ -2276,3 +2276,49 @@ async fn put_users_forbidden_for_operator() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(applier.take().is_none());
 }
+
+#[tokio::test]
+async fn get_config_scrubs_admin_only_sections_for_operator() {
+    let state = make_state();
+    demote_admin_to_operator(&state);
+    // Seed some admin-visible data so the test would catch a leak.
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.auth.source_password = Some("supersecret".into());
+        cfg.transcode = Some(rustyice_core::config::TranscodeConfig {
+            format: rustyice_core::config::TranscodeFormat::Mp3,
+            sample_rate: 44_100,
+            bitrate_kbps: 128,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/config")
+                .header("Cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Admin-only sections should be null/empty for an operator.
+    assert_eq!(json["server"], serde_json::Value::Null, "server leaked: {json}");
+    assert_eq!(json["logging"], serde_json::Value::Null);
+    assert_eq!(json["limits"], serde_json::Value::Null);
+    assert_eq!(json["transcode"], serde_json::Value::Null);
+    assert!(json["auth"]["users"].as_array().unwrap().is_empty());
+    assert_eq!(json["auth"]["source_password"], serde_json::Value::Null);
+
+    // Stream-y sections still flow through.
+    assert!(json["mounts"].is_array());
+    assert!(json["autodjs"].is_array());
+    assert!(json["relays"].is_array());
+}
