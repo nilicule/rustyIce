@@ -33,6 +33,11 @@ pub enum ApplyError {
 
 /// Watches for SIGHUP and reloads hot-reloadable config fields.
 /// Runs until `shutdown` is cancelled.
+///
+/// `config_write_lock` is the same mutex held by API saves; SIGHUP acquires
+/// it for its load+apply sequence so a half-written `config.toml` is never
+/// observable to the reloader.
+#[allow(clippy::too_many_arguments)]
 pub async fn watch_sighup(
     config_path: PathBuf,
     config: Arc<ArcSwap<Config>>,
@@ -41,6 +46,7 @@ pub async fn watch_sighup(
     autodjs: Arc<AutoDjRegistry>,
     relays: Arc<RelayRegistry>,
     app_state: crate::state::AppState,
+    config_write_lock: Arc<tokio::sync::Mutex<()>>,
     shutdown: CancellationToken,
 ) {
     #[cfg(unix)]
@@ -58,6 +64,7 @@ pub async fn watch_sighup(
             tokio::select! {
                 _ = sighup.recv() => {
                     info!("SIGHUP received, reloading config from {}", config_path.display());
+                    let _guard = config_write_lock.lock().await;
                     let deps = ApplyDeps {
                         config: &config,
                         auth: &auth,
@@ -79,6 +86,7 @@ pub async fn watch_sighup(
 
     #[cfg(not(unix))]
     {
+        let _ = config_write_lock; // silence unused on non-unix
         shutdown.cancelled().await;
     }
 }
