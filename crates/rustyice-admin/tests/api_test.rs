@@ -811,3 +811,95 @@ async fn put_server_happy_path() {
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("radio.example"), "config.toml missing new hostname:\n{on_disk}");
 }
+
+#[tokio::test]
+async fn put_server_rejects_invalid_socket_addr() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "server":  { "stream_bind": "not-a-socket", "admin_bind": "127.0.0.1:8001", "hostname": "h" },
+        "logging": { "level": "info", "format": "pretty" },
+        "limits":  { "max_listeners_global": 500, "ring_size": 64, "slow_listener_grace_s": 2, "burst_size": 0, "source_max_kbps": null }
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Axum's Json extractor returns 422 for malformed values (e.g. a
+    // SocketAddr that can't parse). Semantic errors caught downstream still
+    // return 400; structural errors come back as 422.
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(applier.take().is_none(), "applier should not have been called");
+}
+
+#[tokio::test]
+async fn put_server_rejects_zero_ring_size() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let body = serde_json::json!({
+        "server":  { "stream_bind": "0.0.0.0:8000", "admin_bind": "127.0.0.1:8001", "hostname": "h" },
+        "logging": { "level": "info", "format": "pretty" },
+        "limits":  { "max_listeners_global": 500, "ring_size": 0, "slow_listener_grace_s": 2, "burst_size": 65536, "source_max_kbps": null }
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["field"], "limits.ring_size");
+    assert_eq!(json["disk_written"], false);
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(before, after, "disk should not have been touched on validation failure");
+    assert!(applier.take().is_none());
+}
+
+#[tokio::test]
+async fn put_server_requires_auth() {
+    let state = make_state();
+    let app = build_admin_router(state);
+    let body = server_patch_json("h");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
