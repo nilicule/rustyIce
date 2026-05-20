@@ -737,6 +737,7 @@ a.stream-row:hover .stream-path::before {
 }
 .config-banner.warning { border-color: var(--accent); }
 .config-banner.error { border-color: #d04a4a; color: #d04a4a; }
+.config-banner.success { border-color: #5cc46c; color: #5cc46c; }
 
 .config-form { display: flex; flex-direction: column; gap: 2rem; }
 .config-group {

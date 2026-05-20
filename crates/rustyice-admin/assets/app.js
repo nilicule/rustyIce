@@ -366,6 +366,20 @@ const configView = {
     b.textContent = message;
   },
 
+  // Briefly display a transient banner that auto-clears after `ms`. If the
+  // user navigates away or triggers another banner in the meantime, the
+  // pending timer is cancelled so we don't clobber later content.
+  flashBanner(message, kind = 'success', ms = 2500) {
+    this.showBanner(message, kind);
+    if (this._flashTimer) clearTimeout(this._flashTimer);
+    this._flashTimer = setTimeout(() => {
+      const b = $('config-banner');
+      // Only clear if the same flash is still up (i.e. nothing else replaced it).
+      if (b && b.textContent === message) this.clearBanner();
+      this._flashTimer = null;
+    }, ms);
+  },
+
   maybeShowDefaultsBanner(data) {
     if (data.source === 'defaults') {
       this.showBanner(
@@ -476,7 +490,10 @@ const configView = {
     form.addEventListener('input', recomputeDirty);
     form.addEventListener('change', recomputeDirty);
 
-    discard.addEventListener('click', () => this.renderServer());
+    discard.addEventListener('click', () => {
+      this.renderServer();
+      this.flashBanner('Changes discarded.', 'success');
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -504,13 +521,16 @@ const configView = {
               path: payload.path,
               source: payload.source,
             };
-            // Update banner: defaults-mode might have flipped to file-backed.
-            if (payload.source === 'defaults') this.maybeShowDefaultsBanner(payload);
-            else this.clearBanner();
           }
-          this.showWarnings(payload?.applied_warnings || []);
           save.disabled = true;
           discard.disabled = true;
+          const warnings = payload?.applied_warnings || [];
+          if (warnings.length) {
+            // Warnings stick around — operator needs to remember to restart.
+            this.showBanner(`Saved. ${warnings.join(' · ')}`, 'warning');
+          } else {
+            this.flashBanner('Configuration saved.', 'success');
+          }
         } else if ((res.status === 400 || res.status === 422) && payload?.field) {
           this.markFieldError(payload.field, payload.error || 'invalid value');
           recomputeDirty();
@@ -586,11 +606,6 @@ const configView = {
     err.className = 'config-field-error';
     err.textContent = msg;
     wrap.appendChild(err);
-  },
-
-  showWarnings(warnings) {
-    if (!warnings.length) { this.clearBanner(); return; }
-    this.showBanner(warnings.join(' · '), 'warning');
   },
 };
 
