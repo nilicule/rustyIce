@@ -80,7 +80,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --bin rustyice --target ${{ matrix.target }}
+        run: cargo build --profile release-dist --bin rustyice --target ${{ matrix.target }}
 
       - name: Rename + upload binary
         shell: bash
@@ -88,7 +88,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           OUT="rustyice-${{ matrix.name }}${{ matrix.ext }}"
-          cp "target/${{ matrix.target }}/release/rustyice${{ matrix.ext }}" "$OUT"
+          cp "target/${{ matrix.target }}/release-dist/rustyice${{ matrix.ext }}" "$OUT"
           gh release upload "${{ github.event.release.tag_name }}" "$OUT" --clobber
 
   # ── .deb and .rpm packages (linux amd64 + arm64) ───────────────────────────
@@ -130,13 +130,13 @@ jobs:
           tool: cargo-deb,cargo-generate-rpm
 
       - name: Build release binary
-        run: cargo build --release --bin rustyice --target ${{ matrix.target }} -p rustyice-server
+        run: cargo build --profile release-dist --bin rustyice --target ${{ matrix.target }} -p rustyice-server
 
       - name: Build .deb
-        run: cargo deb -p rustyice-server --no-build --target ${{ matrix.target }}
+        run: cargo deb -p rustyice-server --no-build --profile release-dist --target ${{ matrix.target }}
 
       - name: Build .rpm
-        run: cargo generate-rpm -p crates/rustyice-server --target ${{ matrix.target }}
+        run: cargo generate-rpm -p crates/rustyice-server --profile release-dist --target ${{ matrix.target }}
 
       - name: Upload .deb and .rpm
         env:
