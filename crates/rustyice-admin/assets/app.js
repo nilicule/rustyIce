@@ -461,16 +461,21 @@ const configView = {
   },
 
   field(name, label, value, opts = {}) {
-    const restart = opts.restart ? '<span class="restart-badge">RESTART REQUIRED</span>' : '';
+    const restart = opts.restart
+      ? '<span class="restart-badge" title="Restart required for this change to take effect">RESTART</span>'
+      : '';
     const hint = opts.hint ? `<span class="config-field-hint">${escapeHtml(opts.hint)}</span>` : '';
     const help = opts.help ? `<p class="config-field-help">${escapeHtml(opts.help)}</p>` : '';
     const min = opts.min != null ? ` min="${opts.min}"` : '';
     const idPrefix = opts.idPrefix || '';
     return `
       <div class="config-field" data-field="${name}">
-        <label for="cf-${idPrefix}${name}">${label}</label>
+        <div class="config-field-label">
+          <label for="cf-${idPrefix}${name}">${label}</label>
+          ${restart}
+        </div>
         <input id="cf-${idPrefix}${name}" name="${name}" type="${opts.type}" value="${escapeHtml(String(value ?? ''))}"${min}>
-        ${restart || hint || '<span></span>'}
+        ${hint || '<span></span>'}
         ${help}
       </div>
     `;

@@ -768,6 +768,13 @@ a.stream-row:hover .stream-path::before {
   letter-spacing: .12em;
   color: var(--fg-muted);
 }
+/* Wraps the field label so a RESTART badge can sit inline next to it. */
+.config-field-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
 .config-field input,
 .config-field select {
   font-family: var(--mono);
