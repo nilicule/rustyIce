@@ -892,6 +892,7 @@ const configView = {
         <span class="mount-row-path">${escapeHtml(m.path || '(unnamed mount)')}</span>
         <span class="mount-row-summary">${escapeHtml(summary)}</span>
         ${tc}
+        <button type="button" class="mount-row-remove" data-action="remove" data-idx="${idx}" title="Remove this mount" aria-label="Remove mount ${escapeHtml(m.path)}">×</button>
         <span class="mount-row-edit">EDIT →</span>
       </div>
     `;
@@ -960,21 +961,26 @@ const configView = {
     });
 
     list.addEventListener('click', (e) => {
-      const editBtn = e.target.closest('[data-action="edit"]');
+      // Check the most specific action first; the collapsed row also has
+      // `data-action="edit"` on its outer element, so a click on the inner
+      // × button would otherwise match both edit and remove.
       const removeBtn = e.target.closest('[data-action="remove"]');
       const saveBtn = e.target.closest('[data-action="save-edit"]');
       const cancelBtn = e.target.closest('[data-action="cancel-edit"]');
+      const editBtn = removeBtn || saveBtn || cancelBtn
+        ? null
+        : e.target.closest('[data-action="edit"]');
 
+      if (removeBtn) {
+        this.removeMountAtIndex(Number(removeBtn.dataset.idx));
+        return;
+      }
       if (editBtn) {
         if (this.mountsEditingIdx != null) return; // ignore while editing
         this.mountsEditingIdx = Number(editBtn.dataset.idx);
         this.drawMountsPane();
         const pathInput = $(`cf-m${this.mountsEditingIdx}-path`);
         if (pathInput) pathInput.focus();
-        return;
-      }
-      if (removeBtn) {
-        this.removeMountAtIndex(Number(removeBtn.dataset.idx));
         return;
       }
       if (cancelBtn) {
@@ -998,8 +1004,11 @@ const configView = {
       }
     });
 
-    // Keyboard accessibility for the collapsed rows (role=button).
+    // Keyboard accessibility for the collapsed rows (role=button). Skip
+    // when focus is inside a real button (e.g. the × remove) so its own
+    // default Enter/Space behavior wins.
     list.addEventListener('keydown', (e) => {
+      if (e.target.closest('button')) return;
       const row = e.target.closest('[data-action="edit"]');
       if (!row) return;
       if (e.key === 'Enter' || e.key === ' ') {

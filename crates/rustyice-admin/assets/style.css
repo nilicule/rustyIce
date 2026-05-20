@@ -986,10 +986,12 @@ a.stream-row:hover .stream-path::before {
 .mounts-editor { display: flex; flex-direction: column; gap: 1.5rem; }
 .mounts-list { display: flex; flex-direction: column; gap: .5rem; }
 
-/* Collapsed mount row: one line, click/Enter expands into the editor. */
+/* Collapsed mount row: one line, click/Enter expands into the editor.
+   Grid columns: path · summary · per-mount transcode badge (optional) ·
+   remove button · "EDIT →" cue. */
 .mount-row {
   display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 1rem;
   padding: .65rem 1rem;
@@ -1040,6 +1042,31 @@ a.stream-row:hover .stream-path::before {
 }
 .mount-row:hover .mount-row-edit,
 .mount-row:focus-visible .mount-row-edit { color: var(--accent); }
+/* Inline remove button on the collapsed row. Subtle by default; turns
+   red on hover/focus so it reads as a destructive action. */
+.mount-row-remove {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 1rem;
+  line-height: 1;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.mount-row-remove:hover,
+.mount-row-remove:focus-visible {
+  color: var(--danger, #d04a4a);
+  border-color: var(--danger, #d04a4a);
+  background: var(--danger-soft, rgba(208, 74, 74, .14));
+  outline: none;
+}
 .mount-edit-card {
   border: 1px solid var(--line);
   background: var(--bg-elev);
