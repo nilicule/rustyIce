@@ -40,6 +40,7 @@ tower-http   = { version = "0.6",  features = ["trace", "cors"] }
 http         = "1"
 serde        = { version = "1",    features = ["derive"] }
 toml         = "1.1.2"
+toml_edit    = "0.22"
 tracing      = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 metrics      = "0.24.6"
