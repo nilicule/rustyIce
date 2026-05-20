@@ -1418,3 +1418,173 @@ async fn put_mounts_requires_auth() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn put_mounts_keeps_existing_password_when_omitted() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    // Seed an existing mount with a known password.
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.mounts.push(rustyice_core::config::MountConfig {
+            path: "/keep".into(),
+            source_password: "original-pw".into(),
+            max_listeners: None,
+            name: Some("Original".into()),
+            description: None,
+            genre: None,
+            url: None,
+            burst_size: None,
+            transcode: None,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    // Edit only the name, omit source_password entirely.
+    let body = serde_json::json!({
+        "mounts": [
+            { "path": "/keep", "name": "Renamed" }
+        ]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.mounts.len(), 1);
+    assert_eq!(applied.mounts[0].path, "/keep");
+    assert_eq!(applied.mounts[0].source_password, "original-pw");
+    assert_eq!(applied.mounts[0].name.as_deref(), Some("Renamed"));
+}
+
+#[tokio::test]
+async fn put_mounts_rejects_new_mount_without_password_and_no_global() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    // make_state_with_applier seeds auth.source_password = None.
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "mounts": [{ "path": "/new", "name": "New" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["field"], "mounts[0].source_password");
+    assert!(applier.take().is_none());
+}
+
+#[tokio::test]
+async fn put_mounts_falls_back_to_global_source_password_for_new_mount() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.auth.source_password = Some("letmesource".into());
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "mounts": [{ "path": "/new", "name": "New" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.mounts.len(), 1);
+    assert_eq!(applied.mounts[0].path, "/new");
+    assert_eq!(applied.mounts[0].source_password, "letmesource");
+}
+
+#[tokio::test]
+async fn put_mounts_treats_redacted_sentinel_as_keep_existing() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.mounts.push(rustyice_core::config::MountConfig {
+            path: "/keep".into(),
+            source_password: "original-pw".into(),
+            max_listeners: None,
+            name: None,
+            description: None,
+            genre: None,
+            url: None,
+            burst_size: None,
+            transcode: None,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    // Client echoes back the redacted sentinel — interpret as "unchanged".
+    let body = serde_json::json!({
+        "mounts": [{ "path": "/keep", "source_password": "***", "name": "Renamed" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.mounts[0].source_password, "original-pw");
+}

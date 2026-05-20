@@ -803,14 +803,16 @@ const configView = {
   },
 
   // ── mounts section ──────────────────────────────────────────────────
-  // List editor: one card per mount with the full field set. Per-mount
-  // transcode is a collapsible sub-block toggled by the OVERRIDE switch.
-  // Save sends the entire list (`PUT /api/config/mounts`).
+  // List view: all mounts collapsed to a one-line summary by default.
+  // Click a row (or "+ ADD MOUNT") to expand the editor for exactly one
+  // mount. Save sends only that mount's edits; the backend keeps the
+  // other mounts' passwords by interpreting blank/omitted values as
+  // "unchanged". The shared PUT endpoint receives the full list with
+  // those mounts left as-is.
   renderMounts() {
-    // `mounts` is an in-memory working copy; we mutate it as the user
-    // adds/removes entries, then read it back on save.
+    // In-memory working copy. Mutated as the user adds/removes/edits.
     this.mountsWorking = (this.current.mounts || []).map((m) => this.mountToWorking(m));
-    this.snapshot = JSON.stringify(this.mountsWorking);
+    this.mountsEditingIdx = null; // -1+ index, or null for "nothing open"
     this.drawMountsPane();
   },
 
@@ -831,28 +833,51 @@ const configView = {
   },
 
   drawMountsPane() {
-    const cards = this.mountsWorking
-      .map((m, idx) => this.renderMountCardForm(m, idx))
+    const rows = this.mountsWorking
+      .map((m, idx) =>
+        idx === this.mountsEditingIdx
+          ? this.renderMountCardForm(m, idx)
+          : this.renderMountCollapsedRow(m, idx),
+      )
       .join('');
+    const addingNew = this.mountsEditingIdx === this.mountsWorking.length - 1
+      && this.mountsWorking.length > 0
+      && this.mountsWorking[this.mountsEditingIdx].path === '';
     $('config-pane-body').innerHTML = `
       <div class="mounts-editor">
         <div class="mounts-list" id="mounts-list">
-          ${cards || '<div class="config-placeholder">— no mounts configured —</div>'}
+          ${rows || '<div class="config-placeholder">— no mounts configured —</div>'}
         </div>
         <div class="mounts-actions">
-          <button type="button" class="btn btn-ghost" id="mounts-add">+ ADD MOUNT</button>
-        </div>
-        <div class="config-form-actions">
-          <button type="button" class="btn btn-ghost"   id="mounts-discard" disabled>DISCARD</button>
-          <button type="button" class="btn btn-primary" id="mounts-save"    disabled>SAVE CHANGES</button>
+          <button type="button" class="btn btn-ghost" id="mounts-add"${this.mountsEditingIdx != null ? ' disabled' : ''}>
+            + ADD MOUNT
+          </button>
         </div>
       </div>
     `;
     this.bindMountsPane();
+    void addingNew; // referenced only for clarity; nothing to do with it here.
+  },
+
+  renderMountCollapsedRow(m, idx) {
+    const summary = [m.name, m.description].filter(Boolean).join(' · ');
+    const tc = m.transcode
+      ? `<span class="mount-row-meta">${escapeHtml(`${m.transcode.format} ${m.transcode.bitrate_kbps}k`)}</span>`
+      : '';
+    return `
+      <div class="mount-row" data-action="edit" data-idx="${idx}" role="button" tabindex="0">
+        <span class="mount-row-path">${escapeHtml(m.path || '(unnamed mount)')}</span>
+        <span class="mount-row-summary">${escapeHtml(summary)}</span>
+        ${tc}
+        <span class="mount-row-edit">EDIT →</span>
+      </div>
+    `;
   },
 
   renderMountCardForm(m, idx) {
     const tc = m.transcode;
+    const isNew = !this.current.mounts?.some((cur) => cur.path === m.path) || m.path === '';
+    const passwordPlaceholder = isNew ? '(required, or leave blank for the global)' : '(unchanged if blank)';
     return `
       <fieldset class="mount-edit-card" data-mount-idx="${idx}">
         <legend class="mount-edit-card-title">
@@ -862,8 +887,8 @@ const configView = {
         </legend>
 
         ${mountTextField(idx, 'path', 'PATH', m.path, { required: true, placeholder: '/stream' })}
-        ${mountTextField(idx, 'source_password', 'SOURCE PASSWORD', m.source_password,
-            { type: 'password', placeholder: '(unchanged if blank)' })}
+        ${mountTextField(idx, 'source_password', 'SOURCE PASSWORD', '',
+            { type: 'password', placeholder: passwordPlaceholder })}
         ${mountTextField(idx, 'name', 'NAME', m.name)}
         ${mountTextField(idx, 'description', 'DESCRIPTION', m.description)}
         ${mountTextField(idx, 'genre', 'GENRE', m.genre)}
@@ -889,6 +914,11 @@ const configView = {
           ${mountNumberField(idx, 'tc_sample_rate', 'SAMPLE RATE', tc?.sample_rate ?? 44100, { min: 1, hint: 'Hz' })}
           ${mountNumberField(idx, 'tc_bitrate_kbps', 'BITRATE', tc?.bitrate_kbps ?? 128, { min: 1, hint: 'kbps' })}
         </div>
+
+        <div class="config-form-actions">
+          <button type="button" class="btn btn-ghost"   data-action="cancel-edit">CANCEL</button>
+          <button type="button" class="btn btn-primary" data-action="save-edit">SAVE</button>
+        </div>
       </fieldset>
     `;
   },
@@ -896,17 +926,7 @@ const configView = {
   bindMountsPane() {
     const list = $('mounts-list');
     const add = $('mounts-add');
-    const save = $('mounts-save');
-    const discard = $('mounts-discard');
 
-    const recomputeDirty = () => {
-      this.syncMountsWorkingFromDom();
-      const dirty = JSON.stringify(this.mountsWorking) !== this.snapshot;
-      save.disabled = !dirty;
-      discard.disabled = !dirty;
-    };
-
-    list.addEventListener('input', recomputeDirty);
     list.addEventListener('change', (e) => {
       // Toggle transcode-block visibility when its checkbox flips.
       if (e.target.matches('[data-field-kind="tc-toggle"]')) {
@@ -914,25 +934,59 @@ const configView = {
         const block = list.querySelector(`.mount-transcode[data-mount-idx="${idx}"]`);
         if (block) block.hidden = !e.target.checked;
       }
-      recomputeDirty();
     });
 
     list.addEventListener('click', (e) => {
+      const editBtn = e.target.closest('[data-action="edit"]');
       const removeBtn = e.target.closest('[data-action="remove"]');
-      if (removeBtn) {
-        const idx = Number(removeBtn.dataset.idx);
-        this.syncMountsWorkingFromDom();
-        this.mountsWorking.splice(idx, 1);
+      const saveBtn = e.target.closest('[data-action="save-edit"]');
+      const cancelBtn = e.target.closest('[data-action="cancel-edit"]');
+
+      if (editBtn) {
+        if (this.mountsEditingIdx != null) return; // ignore while editing
+        this.mountsEditingIdx = Number(editBtn.dataset.idx);
         this.drawMountsPane();
-        // After re-render, dirty is re-evaluated; force the buttons enabled
-        // so the user can save the removal even if no other field is dirty.
-        $('mounts-save').disabled = (JSON.stringify(this.mountsWorking) === this.snapshot);
-        $('mounts-discard').disabled = $('mounts-save').disabled;
+        const pathInput = $(`cf-m${this.mountsEditingIdx}-path`);
+        if (pathInput) pathInput.focus();
+        return;
+      }
+      if (removeBtn) {
+        this.removeMountAtIndex(Number(removeBtn.dataset.idx));
+        return;
+      }
+      if (cancelBtn) {
+        // Discard any in-progress edits to this mount by re-reading from
+        // the canonical state. New (unsaved) mounts are dropped entirely.
+        const idx = this.mountsEditingIdx;
+        const original = this.current.mounts?.[idx];
+        if (original) {
+          this.mountsWorking[idx] = this.mountToWorking(original);
+        } else {
+          this.mountsWorking.splice(idx, 1);
+        }
+        this.mountsEditingIdx = null;
+        this.drawMountsPane();
+        pushToast('Edit cancelled.', 'success');
+        return;
+      }
+      if (saveBtn) {
+        this.saveCurrentMountEdit();
+        return;
+      }
+    });
+
+    // Keyboard accessibility for the collapsed rows (role=button).
+    list.addEventListener('keydown', (e) => {
+      const row = e.target.closest('[data-action="edit"]');
+      if (!row) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        row.click();
       }
     });
 
     add.addEventListener('click', () => {
-      this.syncMountsWorkingFromDom();
+      if (this.mountsEditingIdx != null) return;
       this.mountsWorking.push({
         path: '',
         source_password: '',
@@ -944,97 +998,81 @@ const configView = {
         burst_size: null,
         transcode: null,
       });
+      this.mountsEditingIdx = this.mountsWorking.length - 1;
       this.drawMountsPane();
-      $('mounts-save').disabled = false;
-      $('mounts-discard').disabled = false;
-      // Focus the path field of the new card so typing flows.
-      const newIdx = this.mountsWorking.length - 1;
-      const pathInput = $(`cf-m${newIdx}-path`);
+      const pathInput = $(`cf-m${this.mountsEditingIdx}-path`);
       if (pathInput) pathInput.focus();
-    });
-
-    discard.addEventListener('click', () => {
-      this.renderMounts();
-      pushToast('Changes discarded.', 'success');
-    });
-
-    save.addEventListener('click', async () => {
-      this.clearFieldErrors();
-      this.syncMountsWorkingFromDom();
-      // Drop blank source_password from each mount so the server keeps the
-      // existing value (mirrors the redaction approach for GET).
-      const body = {
-        mounts: this.mountsWorking.map((m) => this.workingToPutBody(m)),
-      };
-      // Detect "kept existing password" by checking against the original.
-      const original = (this.current.mounts || []).map((m) => m.source_password);
-      body.mounts.forEach((m, idx) => {
-        if (!m.source_password && original[idx]) {
-          // Pre-existing mount with a blank password field: keep the old one.
-          // Marker: send back the redacted sentinel; the handler interprets
-          // it… actually our backend has no such logic, so prevent the save
-          // and ask the user to enter a password.
-        }
-      });
-      // Client-side guard: every mount must have a non-empty password.
-      const missing = body.mounts.findIndex((m) => !m.source_password.trim());
-      if (missing >= 0) {
-        this.markFieldError(`mounts[${missing}].source_password`, 'must be non-empty');
-        this.showBanner(
-          'Source passwords are redacted on load — enter them again when saving the mounts list.',
-          'error',
-        );
-        return;
-      }
-
-      save.disabled = true;
-      discard.disabled = true;
-      try {
-        const res = await fetch('/api/config/mounts', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (res.status === 401) { location.hash = ''; return; }
-        const payload = await res.json().catch(() => null);
-        if (res.status === 200) {
-          if (payload) {
-            this.current = { ...this.current, mounts: payload.mounts, path: payload.path, source: payload.source };
-          }
-          // Re-render from the canonical response so password redaction is
-          // restored.
-          this.renderMounts();
-          const warnings = payload?.applied_warnings || [];
-          if (warnings.length) {
-            this.showBanner(`Saved. ${warnings.join(' · ')}`, 'warning');
-            pushToast('Mounts saved — restart required.', 'warning', 4000);
-          } else {
-            pushToast('Mounts saved.', 'success');
-          }
-        } else if ((res.status === 400 || res.status === 422) && payload?.field) {
-          this.markFieldError(payload.field, payload.error || 'invalid value');
-          save.disabled = false;
-          discard.disabled = false;
-        } else if (res.status === 500 && payload?.disk_written) {
-          this.showBanner(
-            'Saved to disk, but apply failed. Running server still uses the previous config; restart to load the new file.',
-            'error',
-          );
-        } else {
-          this.showBanner(`Save failed: ${payload?.error || res.statusText}`, 'error');
-          save.disabled = false;
-          discard.disabled = false;
-        }
-      } catch (err) {
-        this.showBanner(`Save failed: ${err.message}`, 'error');
-        save.disabled = false;
-        discard.disabled = false;
-      }
     });
   },
 
-  syncMountsWorkingFromDom() {
-    this.mountsWorking = this.mountsWorking.map((_, idx) => this.readMountFromDom(idx));
+  removeMountAtIndex(idx) {
+    if (!confirm(`Remove mount "${this.mountsWorking[idx].path || `#${idx + 1}`}"?`)) return;
+    // Build the post-remove list and send it to the server. The remaining
+    // mounts have blank password fields, which the server resolves to the
+    // existing per-mount passwords.
+    const next = this.mountsWorking.slice();
+    next.splice(idx, 1);
+    this.persistMounts(next, { successMessage: 'Mount removed.' });
+  },
+
+  saveCurrentMountEdit() {
+    const idx = this.mountsEditingIdx;
+    if (idx == null) return;
+    this.clearFieldErrors();
+    // Read the form values for the edited mount into the working copy.
+    this.mountsWorking[idx] = this.readMountFromDom(idx);
+    // Client-side: path must be non-empty.
+    if (!this.mountsWorking[idx].path) {
+      this.markFieldError(`mounts[${idx}].path`, 'must be non-empty');
+      return;
+    }
+    this.persistMounts(this.mountsWorking, { successMessage: 'Mount saved.' });
+  },
+
+  async persistMounts(workingList, { successMessage }) {
+    const body = {
+      mounts: workingList.map((m) => this.workingToPutBody(m)),
+    };
+    try {
+      const res = await fetch('/api/config/mounts', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) { location.hash = ''; return; }
+      const payload = await res.json().catch(() => null);
+      if (res.status === 200) {
+        if (payload) {
+          this.current = {
+            ...this.current,
+            mounts: payload.mounts,
+            path: payload.path,
+            source: payload.source,
+          };
+        }
+        // Re-render from the canonical response so passwords are redacted
+        // again and the collapsed list reflects on-disk state.
+        this.renderMounts();
+        const warnings = payload?.applied_warnings || [];
+        if (warnings.length) {
+          this.showBanner(`Saved. ${warnings.join(' · ')}`, 'warning');
+          pushToast(`${successMessage} Restart required.`, 'warning', 4000);
+        } else {
+          pushToast(successMessage, 'success');
+        }
+      } else if ((res.status === 400 || res.status === 422) && payload?.field) {
+        this.markFieldError(payload.field, payload.error || 'invalid value');
+      } else if (res.status === 500 && payload?.disk_written) {
+        this.showBanner(
+          'Saved to disk, but apply failed. Running server still uses the previous config; restart to load the new file.',
+          'error',
+        );
+      } else {
+        this.showBanner(`Save failed: ${payload?.error || res.statusText}`, 'error');
+      }
+    } catch (err) {
+      this.showBanner(`Save failed: ${err.message}`, 'error');
+    }
   },
 
   readMountFromDom(idx) {

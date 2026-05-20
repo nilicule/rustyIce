@@ -279,7 +279,11 @@ pub struct MountsPutBody {
 #[derive(Deserialize)]
 pub struct MountSubBody {
     pub path: String,
-    pub source_password: String,
+    /// Optional on the wire so the client can omit it (or send the redaction
+    /// sentinel) to mean "keep the existing password". The server resolves
+    /// every entry to a concrete password before patching disk.
+    #[serde(default)]
+    pub source_password: Option<String>,
     #[serde(default)]
     pub max_listeners: Option<u32>,
     #[serde(default)]
@@ -300,27 +304,67 @@ pub async fn put_mounts(
     State(state): State<AdminState>,
     Json(body): Json<MountsPutBody>,
 ) -> impl IntoResponse {
-    let patch = MountsPatch {
-        mounts: body
-            .mounts
-            .into_iter()
-            .map(|m| MountSubPatch {
-                path: m.path,
-                source_password: m.source_password,
-                max_listeners: m.max_listeners,
-                name: m.name,
-                description: m.description,
-                genre: m.genre,
-                url: m.url,
-                burst_size: m.burst_size,
-                transcode: m.transcode.map(|t| TranscodeSubPatch {
-                    format: t.format,
-                    sample_rate: t.sample_rate,
-                    bitrate_kbps: t.bitrate_kbps,
-                }),
-            })
-            .collect(),
-    };
+    // Map existing mount path → current source_password so we can keep
+    // unchanged passwords without making the client re-enter them.
+    let current = state.config.load_full();
+    let existing_passwords: std::collections::HashMap<&str, &str> = current
+        .mounts
+        .iter()
+        .map(|m| (m.path.as_str(), m.source_password.as_str()))
+        .collect();
+
+    // Resolve each request entry's password in this priority order:
+    //   1. Explicit non-empty value in the request (and not the redacted
+    //      sentinel) — operator is rotating or setting a fresh password.
+    //   2. The existing per-mount password if the path is already configured
+    //      — operator left the field blank to keep what's there.
+    //   3. The global `[auth].source_password` — operator created a new mount
+    //      and is happy to fall back to the shared source password.
+    //   4. Otherwise reject — there is no password to authenticate sources
+    //      against.
+    let global_source_password = current.auth.source_password.clone();
+    let mut resolved: Vec<MountSubPatch> = Vec::with_capacity(body.mounts.len());
+    for (idx, m) in body.mounts.into_iter().enumerate() {
+        let supplied = m.source_password.as_deref();
+        let password = match supplied {
+            Some(p) if !p.is_empty() && p != "***" => p.to_string(),
+            _ => {
+                if let Some(p) = existing_passwords.get(m.path.as_str()) {
+                    (*p).to_string()
+                } else if let Some(p) = &global_source_password {
+                    p.clone()
+                } else {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(PutError {
+                            error: "new mount requires source_password (no global \
+                                    [auth].source_password is set to fall back on)"
+                                .into(),
+                            field: Some(format!("mounts[{idx}].source_password")),
+                            disk_written: false,
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        };
+        resolved.push(MountSubPatch {
+            path: m.path,
+            source_password: password,
+            max_listeners: m.max_listeners,
+            name: m.name,
+            description: m.description,
+            genre: m.genre,
+            url: m.url,
+            burst_size: m.burst_size,
+            transcode: m.transcode.map(|t| TranscodeSubPatch {
+                format: t.format,
+                sample_rate: t.sample_rate,
+                bitrate_kbps: t.bitrate_kbps,
+            }),
+        });
+    }
+    let patch = MountsPatch { mounts: resolved };
 
     if let Err(WriteError::Validate { field, message }) =
         config_write::validate_mounts_patch(&patch)
@@ -332,8 +376,7 @@ pub async fn put_mounts(
             .into_response();
     }
 
-    // Build candidate Config.
-    let current = state.config.load_full();
+    // Build candidate Config. Reuse the `current` snapshot loaded above.
     let mut candidate: Config = (*current).clone();
     candidate.mounts = patch
         .mounts

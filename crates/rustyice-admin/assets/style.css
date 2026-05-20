@@ -975,7 +975,62 @@ a.stream-row:hover .stream-path::before {
 
 /* ─── mounts editor ───────────────────────────────────────────────────── */
 .mounts-editor { display: flex; flex-direction: column; gap: 1.5rem; }
-.mounts-list { display: flex; flex-direction: column; gap: 1.25rem; }
+.mounts-list { display: flex; flex-direction: column; gap: .5rem; }
+
+/* Collapsed mount row: one line, click/Enter expands into the editor. */
+.mount-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding: .65rem 1rem;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.mount-row:hover, .mount-row:focus-visible {
+  background: var(--bg-elev-2);
+  border-color: var(--accent);
+  outline: none;
+}
+.mount-row-path {
+  font-family: var(--mono);
+  font-size: .95rem;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mount-row-path::before {
+  content: "▸ ";
+  color: var(--accent);
+}
+.mount-row-summary {
+  font-family: var(--mono);
+  font-size: .8rem;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mount-row-meta {
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .12em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: .12rem .4rem;
+}
+.mount-row-edit {
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .14em;
+  color: var(--fg-muted);
+}
+.mount-row:hover .mount-row-edit,
+.mount-row:focus-visible .mount-row-edit { color: var(--accent); }
 .mount-edit-card {
   border: 1px solid var(--line);
   background: var(--bg-elev);
