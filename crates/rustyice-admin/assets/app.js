@@ -397,6 +397,8 @@ const configView = {
   renderSection() {
     if (this.section === 'server') {
       this.renderServer();
+    } else if (this.section === 'transcode') {
+      this.renderTranscode();
     } else {
       $('config-pane-body').innerHTML =
         `<div class="config-placeholder">— ${escapeHtml(this.section.toUpperCase())} editor coming soon —</div>`;
@@ -459,23 +461,24 @@ const configView = {
     const restart = opts.restart ? '<span class="restart-badge">RESTART REQUIRED</span>' : '';
     const hint = opts.hint ? `<span class="config-field-hint">${escapeHtml(opts.hint)}</span>` : '';
     const min = opts.min != null ? ` min="${opts.min}"` : '';
+    const idPrefix = opts.idPrefix || '';
     return `
       <div class="config-field" data-field="${name}">
-        <label for="cf-${name}">${label}</label>
-        <input id="cf-${name}" name="${name}" type="${opts.type}" value="${escapeHtml(String(value ?? ''))}"${min}>
+        <label for="cf-${idPrefix}${name}">${label}</label>
+        <input id="cf-${idPrefix}${name}" name="${name}" type="${opts.type}" value="${escapeHtml(String(value ?? ''))}"${min}>
         ${restart || hint || '<span></span>'}
       </div>
     `;
   },
 
-  selectField(name, label, value, options) {
+  selectField(name, label, value, options, idPrefix = '') {
     const opts = options
       .map((o) => `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`)
       .join('');
     return `
       <div class="config-field" data-field="${name}">
-        <label for="cf-${name}">${label}</label>
-        <select id="cf-${name}" name="${name}">${opts}</select>
+        <label for="cf-${idPrefix}${name}">${label}</label>
+        <select id="cf-${idPrefix}${name}" name="${name}">${opts}</select>
         <span></span>
       </div>
     `;
@@ -594,6 +597,164 @@ const configView = {
         burst_size: c.burst_size,
         source_max_kbps: c.source_max_kbps,
       },
+    };
+  },
+
+  // ── transcode section ───────────────────────────────────────────────
+  // Global [transcode] block. Optional: when the ENABLED checkbox is off,
+  // the field values are kept locally for convenience but the save sends
+  // `{ "transcode": null }` to clear the block.
+  renderTranscode() {
+    const tc = this.current.transcode || null;
+    const enabled = tc !== null;
+    // Defaults when the block doesn't exist yet — match config.toml's
+    // typical seed values so the form is ready to enable.
+    const format = (tc && tc.format) || 'mp3';
+    const sample_rate = tc ? tc.sample_rate : 44100;
+    const bitrate_kbps = tc ? tc.bitrate_kbps : 128;
+
+    this.snapshot = { enabled, format, sample_rate, bitrate_kbps };
+
+    $('config-pane-body').innerHTML = `
+      <form class="config-form" id="config-transcode-form" novalidate>
+        <fieldset class="config-group">
+          <legend class="config-group-title">GLOBAL TRANSCODE</legend>
+
+          <div class="config-field" data-field="enabled">
+            <label for="cf-tc-enabled">ENABLED</label>
+            <input id="cf-tc-enabled" name="enabled" type="checkbox"${enabled ? ' checked' : ''}>
+            <span class="config-field-hint">Default applied to mounts/autodjs/relays without per-source overrides.</span>
+          </div>
+
+          ${this.selectField('format',       'FORMAT',      format,        ['mp3', 'vorbis'], 'tc-')}
+          ${this.field('sample_rate',  'SAMPLE RATE', sample_rate,   { type: 'number', min: 1, hint: 'Hz', idPrefix: 'tc-' })}
+          ${this.field('bitrate_kbps', 'BITRATE',     bitrate_kbps,  { type: 'number', min: 1, hint: 'kbps', idPrefix: 'tc-' })}
+        </fieldset>
+
+        <div class="config-form-actions">
+          <button type="button" class="btn btn-ghost"   id="config-transcode-discard" disabled>DISCARD</button>
+          <button type="submit"  class="btn btn-primary" id="config-transcode-save"    disabled>SAVE CHANGES</button>
+        </div>
+      </form>
+    `;
+    this.applyTranscodeEnabledState();
+    this.bindTranscodeForm();
+  },
+
+  applyTranscodeEnabledState() {
+    const enabled = $('cf-tc-enabled')?.checked ?? false;
+    ['tc-format', 'tc-sample_rate', 'tc-bitrate_kbps'].forEach((id) => {
+      const el = $(`cf-${id}`);
+      if (el) el.disabled = !enabled;
+    });
+  },
+
+  bindTranscodeForm() {
+    const form = $('config-transcode-form');
+    const save = $('config-transcode-save');
+    const discard = $('config-transcode-discard');
+
+    const recomputeDirty = () => {
+      const current = this.collectTranscodeForm();
+      // Sub-field changes only count as dirty when the block is enabled —
+      // otherwise the body sends `null` and the in-memory field values are
+      // ignored. This keeps the buttons quiet while editing-then-disabling.
+      let dirty = current.enabled !== this.snapshot.enabled;
+      if (!dirty && current.enabled) {
+        dirty =
+          current.format !== this.snapshot.format ||
+          current.sample_rate !== this.snapshot.sample_rate ||
+          current.bitrate_kbps !== this.snapshot.bitrate_kbps;
+      }
+      save.disabled = !dirty;
+      discard.disabled = !dirty;
+    };
+
+    form.addEventListener('input', () => {
+      this.applyTranscodeEnabledState();
+      recomputeDirty();
+    });
+    form.addEventListener('change', () => {
+      this.applyTranscodeEnabledState();
+      recomputeDirty();
+    });
+
+    discard.addEventListener('click', () => {
+      this.renderTranscode();
+      pushToast('Changes discarded.', 'success');
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      this.clearFieldErrors();
+      const collected = this.collectTranscodeForm();
+      const body = this.buildTranscodePutBody(collected);
+      save.disabled = true;
+      discard.disabled = true;
+      try {
+        const res = await fetch('/api/config/transcode', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (res.status === 401) { location.hash = ''; return; }
+        const payload = await res.json().catch(() => null);
+        if (res.status === 200) {
+          this.snapshot = collected;
+          if (payload) {
+            this.current = {
+              ...this.current,
+              transcode: payload.transcode,
+              path: payload.path,
+              source: payload.source,
+            };
+          }
+          save.disabled = true;
+          discard.disabled = true;
+          const warnings = payload?.applied_warnings || [];
+          if (warnings.length) {
+            this.showBanner(`Saved. ${warnings.join(' · ')}`, 'warning');
+            pushToast('Configuration saved — restart required.', 'warning', 4000);
+          } else {
+            pushToast('Configuration saved.', 'success');
+          }
+        } else if ((res.status === 400 || res.status === 422) && payload?.field) {
+          this.markFieldError(payload.field, payload.error || 'invalid value');
+          recomputeDirty();
+        } else if (res.status === 500 && payload?.disk_written) {
+          this.showBanner(
+            'Saved to disk, but apply failed. Running server still uses the previous config; restart to load the new file.',
+            'error',
+          );
+          this.snapshot = collected;
+          save.disabled = true;
+          discard.disabled = true;
+        } else {
+          this.showBanner(`Save failed: ${payload?.error || res.statusText}`, 'error');
+          recomputeDirty();
+        }
+      } catch (err) {
+        this.showBanner(`Save failed: ${err.message}`, 'error');
+        recomputeDirty();
+      }
+    });
+  },
+
+  collectTranscodeForm() {
+    const enabled = $('cf-tc-enabled').checked;
+    return {
+      enabled,
+      format: $('cf-tc-format').value,
+      sample_rate: Number($('cf-tc-sample_rate').value),
+      bitrate_kbps: Number($('cf-tc-bitrate_kbps').value),
+    };
+  },
+
+  buildTranscodePutBody(c) {
+    return {
+      transcode: c.enabled
+        ? { format: c.format, sample_rate: c.sample_rate, bitrate_kbps: c.bitrate_kbps }
+        : null,
     };
   },
 

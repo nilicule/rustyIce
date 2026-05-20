@@ -90,9 +90,10 @@ pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
 // ─── PUT /api/config/server ────────────────────────────────────────────────
 
 use crate::config_write::{
-    self, LimitsSubPatch, LoggingSubPatch, ServerPatch as WritePatch, ServerSubPatch, WriteError,
+    self, LimitsSubPatch, LoggingSubPatch, ServerPatch as WritePatch, ServerSubPatch,
+    TranscodePatch, TranscodeSubPatch, WriteError,
 };
-use rustyice_core::config::LogFormat;
+use rustyice_core::config::{LogFormat, TranscodeFormat};
 use serde::Deserialize;
 use toml_edit::DocumentMut;
 
@@ -197,6 +198,90 @@ pub async fn put_server(
             .into_response();
     }
 
+    persist_and_apply(&state, "server", candidate, |doc| {
+        config_write::apply_server_patch(doc, &patch);
+    })
+    .await
+}
+
+// ─── PUT /api/config/transcode ────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct TranscodePutBody {
+    /// `None` (or an absent `transcode` key with `#[serde(default)]`) removes
+    /// the global transcode block.
+    #[serde(default)]
+    pub transcode: Option<TranscodeSubBody>,
+}
+
+#[derive(Deserialize)]
+pub struct TranscodeSubBody {
+    pub format: String,
+    pub sample_rate: u32,
+    pub bitrate_kbps: u32,
+}
+
+pub async fn put_transcode(
+    State(state): State<AdminState>,
+    Json(body): Json<TranscodePutBody>,
+) -> impl IntoResponse {
+    let patch = TranscodePatch {
+        transcode: body.transcode.as_ref().map(|s| TranscodeSubPatch {
+            format: s.format.clone(),
+            sample_rate: s.sample_rate,
+            bitrate_kbps: s.bitrate_kbps,
+        }),
+    };
+
+    if let Err(WriteError::Validate { field, message }) =
+        config_write::validate_transcode_patch(&patch)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: message, field: Some(field), disk_written: false }),
+        )
+            .into_response();
+    }
+
+    let current = state.config.load_full();
+    let mut candidate: Config = (*current).clone();
+    candidate.transcode = patch.transcode.as_ref().map(|s| TranscodeConfig {
+        format: match s.format.as_str() {
+            "mp3" => TranscodeFormat::Mp3,
+            "vorbis" => TranscodeFormat::Vorbis,
+            _ => unreachable!("validated above"),
+        },
+        sample_rate: s.sample_rate,
+        bitrate_kbps: s.bitrate_kbps,
+    });
+
+    if let Err(msg) = candidate.validate_paths() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: msg, field: None, disk_written: false }),
+        )
+            .into_response();
+    }
+
+    persist_and_apply(&state, "transcode", candidate, |doc| {
+        config_write::apply_transcode_patch(doc, &patch);
+    })
+    .await
+}
+
+/// Shared persist-and-apply pipeline used by every `PUT /api/config/<section>`
+/// handler. The caller provides:
+/// - a validated candidate `Config` (with the section's patch already overlaid)
+/// - a closure that mutates a `toml_edit::DocumentMut` to apply the same patch
+/// - the section name, used purely for logging
+///
+/// Steps: lock → read disk (or bootstrap) → patch doc → atomic write → apply.
+async fn persist_and_apply(
+    state: &AdminState,
+    section: &'static str,
+    candidate: Config,
+    patch_doc: impl Fn(&mut DocumentMut),
+) -> axum::response::Response {
     let _guard = state.config_write_lock.lock().await;
 
     let path_snapshot = state.config_path.load_full();
@@ -225,7 +310,7 @@ pub async fn put_server(
         Ok(d) => d,
         Err(e) => return io_error_response(format!("parse existing config: {e}")),
     };
-    config_write::apply_server_patch(&mut doc, &patch);
+    patch_doc(&mut doc);
 
     if let Err(e) = config_write::atomic_write(&path_for_write, &doc.to_string()) {
         return io_error_response(format!("write config.toml: {e}"));
@@ -237,9 +322,9 @@ pub async fn put_server(
             if path_snapshot.as_ref().is_none() {
                 state.config_path.store(Arc::new(Some(path_for_write)));
             }
-            tracing::info!(section = "server", "config saved via api");
+            tracing::info!(section, "config saved via api");
             let cfg = state.config.load_full();
-            let resp_body = build_config_response(&cfg, &state);
+            let resp_body = build_config_response(&cfg, state);
             (
                 StatusCode::OK,
                 Json(PutSuccess { config: resp_body, applied_warnings: warnings }),
@@ -247,7 +332,7 @@ pub async fn put_server(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!(section = "server", error = %e, "config apply failed (disk already written)");
+            tracing::error!(section, error = %e, "config apply failed (disk already written)");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(PutError { error: e, field: None, disk_written: true }),

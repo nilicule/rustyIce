@@ -1096,3 +1096,142 @@ async fn put_server_concurrent_saves_serialize() {
     let has_beta = on_disk.contains(r#""beta""#);
     assert!(has_alpha ^ has_beta, "expected exactly one hostname, got:\n{on_disk}");
 }
+
+// ─── PUT /api/config/transcode tests ──────────────────────────────────────
+
+fn transcode_set_body() -> serde_json::Value {
+    serde_json::json!({
+        "transcode": { "format": "vorbis", "sample_rate": 48000, "bitrate_kbps": 192 }
+    })
+}
+
+fn transcode_clear_body() -> serde_json::Value {
+    serde_json::json!({ "transcode": null })
+}
+
+#[tokio::test]
+async fn put_transcode_writes_block_to_disk_and_applies() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/transcode")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(transcode_set_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    let tc = applied.transcode.expect("transcode set on candidate");
+    assert_eq!(tc.sample_rate, 48000);
+    assert_eq!(tc.bitrate_kbps, 192);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[transcode]"), "missing [transcode]:\n{on_disk}");
+    assert!(on_disk.contains(r#"format = "vorbis""#));
+    assert!(on_disk.contains("bitrate_kbps = 192"));
+}
+
+#[tokio::test]
+async fn put_transcode_with_null_removes_block_from_disk() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    // Seed config with a transcode block present.
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.transcode = Some(rustyice_core::config::TranscodeConfig {
+            format: rustyice_core::config::TranscodeFormat::Mp3,
+            sample_rate: 44_100,
+            bitrate_kbps: 128,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/transcode")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(transcode_clear_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert!(applied.transcode.is_none(), "candidate should have transcode = None");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("[transcode]"), "block should be gone:\n{on_disk}");
+}
+
+#[tokio::test]
+async fn put_transcode_rejects_bad_format() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let body = serde_json::json!({
+        "transcode": { "format": "flac", "sample_rate": 44100, "bitrate_kbps": 128 }
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/transcode")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["field"], "transcode.format");
+    assert!(applier.take().is_none());
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(before, after, "disk should be untouched on validation failure");
+}
+
+#[tokio::test]
+async fn put_transcode_requires_auth() {
+    let state = make_state();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/transcode")
+                .header("Content-Type", "application/json")
+                .body(Body::from(transcode_set_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

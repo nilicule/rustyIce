@@ -124,6 +124,77 @@ pub fn apply_server_patch(doc: &mut DocumentMut, p: &ServerPatch) {
     }
 }
 
+// ─── Transcode section ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct TranscodePatch {
+    /// `None` removes the `[transcode]` block from the file; `Some(_)` writes it.
+    pub transcode: Option<TranscodeSubPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TranscodeSubPatch {
+    /// "mp3" or "vorbis".
+    pub format: String,
+    pub sample_rate: u32,
+    pub bitrate_kbps: u32,
+}
+
+/// # Errors
+/// Returns `WriteError::Validate` when a sub-field is out of range.
+pub fn validate_transcode_patch(p: &TranscodePatch) -> Result<(), WriteError> {
+    let Some(sub) = &p.transcode else {
+        return Ok(());
+    };
+    if sub.format != "mp3" && sub.format != "vorbis" {
+        return Err(WriteError::Validate {
+            field: "transcode.format".into(),
+            message: "must be \"mp3\" or \"vorbis\"".into(),
+        });
+    }
+    if sub.sample_rate == 0 {
+        return Err(WriteError::Validate {
+            field: "transcode.sample_rate".into(),
+            message: "must be greater than 0".into(),
+        });
+    }
+    if sub.sample_rate > 192_000 {
+        return Err(WriteError::Validate {
+            field: "transcode.sample_rate".into(),
+            message: "must be <= 192000 Hz".into(),
+        });
+    }
+    if sub.bitrate_kbps == 0 {
+        return Err(WriteError::Validate {
+            field: "transcode.bitrate_kbps".into(),
+            message: "must be greater than 0".into(),
+        });
+    }
+    if sub.bitrate_kbps > 512 {
+        return Err(WriteError::Validate {
+            field: "transcode.bitrate_kbps".into(),
+            message: "must be <= 512 kbps".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Patch the `[transcode]` table in `doc`. Removes it entirely when the
+/// patch's `transcode` is `None` — leaves the rest of the document alone.
+pub fn apply_transcode_patch(doc: &mut DocumentMut, p: &TranscodePatch) {
+    match &p.transcode {
+        Some(sub) => {
+            let table = ensure_table(doc, "transcode");
+            table["format"] = value(sub.format.clone());
+            table["sample_rate"] = value(i64::from(sub.sample_rate));
+            table["bitrate_kbps"] = value(i64::from(sub.bitrate_kbps));
+        }
+        None => {
+            doc.as_table_mut().remove("transcode");
+        }
+    }
+}
+
 fn ensure_table<'a>(doc: &'a mut DocumentMut, name: &str) -> &'a mut Item {
     if doc.get(name).is_none() {
         doc[name] = toml_edit::table();
@@ -282,6 +353,152 @@ burst_size            = 65536
             validate_server_patch(&patch),
             Err(WriteError::Validate { field, .. }) if field == "logging.format"
         ));
+    }
+
+    // ── Transcode ──────────────────────────────────────────────────────────
+
+    fn transcode_doc_with_block() -> &'static str {
+        r#"# top-of-file comment
+[server]
+stream_bind = "0.0.0.0:8000"
+admin_bind  = "127.0.0.1:8001"
+hostname    = "localhost"
+
+[logging]
+level  = "info"
+format = "pretty"
+
+[limits]
+max_listeners_global  = 500
+ring_size             = 64
+slow_listener_grace_s = 2
+burst_size            = 65536
+
+[transcode]
+format       = "mp3"
+sample_rate  = 44100
+bitrate_kbps = 128
+"#
+    }
+
+    fn transcode_doc_without_block() -> &'static str {
+        r#"[server]
+stream_bind = "0.0.0.0:8000"
+admin_bind  = "127.0.0.1:8001"
+hostname    = "localhost"
+
+[logging]
+level  = "info"
+format = "pretty"
+
+[limits]
+max_listeners_global  = 500
+ring_size             = 64
+slow_listener_grace_s = 2
+burst_size            = 65536
+"#
+    }
+
+    #[test]
+    fn transcode_patch_writes_new_block_when_absent() {
+        let mut doc: DocumentMut = transcode_doc_without_block().parse().unwrap();
+        apply_transcode_patch(
+            &mut doc,
+            &TranscodePatch {
+                transcode: Some(TranscodeSubPatch {
+                    format: "vorbis".into(),
+                    sample_rate: 48_000,
+                    bitrate_kbps: 96,
+                }),
+            },
+        );
+        let out = doc.to_string();
+        assert!(out.contains("[transcode]"));
+        assert!(out.contains(r#"format = "vorbis""#));
+        assert!(out.contains("sample_rate = 48000"));
+        assert!(out.contains("bitrate_kbps = 96"));
+    }
+
+    #[test]
+    fn transcode_patch_updates_existing_block_preserving_other_keys() {
+        let mut doc: DocumentMut = transcode_doc_with_block().parse().unwrap();
+        apply_transcode_patch(
+            &mut doc,
+            &TranscodePatch {
+                transcode: Some(TranscodeSubPatch {
+                    format: "vorbis".into(),
+                    sample_rate: 44_100,
+                    bitrate_kbps: 192,
+                }),
+            },
+        );
+        let out = doc.to_string();
+        assert!(out.contains("# top-of-file comment"), "lost top comment");
+        assert!(out.contains(r#"hostname    = "localhost""#));
+        assert!(out.contains(r#"format       = "vorbis""#) || out.contains(r#"format = "vorbis""#));
+        assert!(out.contains("bitrate_kbps = 192") || out.contains("bitrate_kbps  = 192"));
+    }
+
+    #[test]
+    fn transcode_patch_removes_block_when_none() {
+        let mut doc: DocumentMut = transcode_doc_with_block().parse().unwrap();
+        apply_transcode_patch(&mut doc, &TranscodePatch { transcode: None });
+        let out = doc.to_string();
+        assert!(!out.contains("[transcode]"), "block should be gone:\n{out}");
+        assert!(!out.contains("bitrate_kbps"));
+        // Untouched content survives.
+        assert!(out.contains("# top-of-file comment") || out.starts_with("[server]"));
+    }
+
+    #[test]
+    fn transcode_validate_rejects_bad_format() {
+        let patch = TranscodePatch {
+            transcode: Some(TranscodeSubPatch {
+                format: "flac".into(),
+                sample_rate: 44_100,
+                bitrate_kbps: 128,
+            }),
+        };
+        assert!(matches!(
+            validate_transcode_patch(&patch),
+            Err(WriteError::Validate { field, .. }) if field == "transcode.format"
+        ));
+    }
+
+    #[test]
+    fn transcode_validate_rejects_zero_sample_rate() {
+        let patch = TranscodePatch {
+            transcode: Some(TranscodeSubPatch {
+                format: "mp3".into(),
+                sample_rate: 0,
+                bitrate_kbps: 128,
+            }),
+        };
+        assert!(matches!(
+            validate_transcode_patch(&patch),
+            Err(WriteError::Validate { field, .. }) if field == "transcode.sample_rate"
+        ));
+    }
+
+    #[test]
+    fn transcode_validate_rejects_oversized_bitrate() {
+        let patch = TranscodePatch {
+            transcode: Some(TranscodeSubPatch {
+                format: "mp3".into(),
+                sample_rate: 44_100,
+                bitrate_kbps: 800,
+            }),
+        };
+        assert!(matches!(
+            validate_transcode_patch(&patch),
+            Err(WriteError::Validate { field, .. }) if field == "transcode.bitrate_kbps"
+        ));
+    }
+
+    #[test]
+    fn transcode_validate_accepts_none() {
+        let patch = TranscodePatch { transcode: None };
+        assert!(validate_transcode_patch(&patch).is_ok());
     }
 
     #[test]
