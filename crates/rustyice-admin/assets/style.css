@@ -782,6 +782,14 @@ a.stream-row:hover .stream-path::before {
   outline: none;
   border-color: var(--accent);
 }
+/* Number inputs and small dropdowns shouldn't stretch to the full grid
+   cell width — the value is short and the giant box looks unbalanced. */
+.config-field input[type="number"],
+.config-field select {
+  max-width: 14rem;
+  justify-self: start;
+  width: 100%;
+}
 .config-field-hint {
   font-family: var(--mono);
   font-size: .75rem;
@@ -874,3 +882,62 @@ a.stream-row:hover .stream-path::before {
 .toast.success { border-color: #5cc46c; color: #5cc46c; }
 .toast.error   { border-color: #d04a4a; color: #d04a4a; }
 .toast.warning { border-color: var(--accent); }
+
+/* ─── toggle switch ──────────────────────────────────────────────────── */
+/* Used inside .config-field grid cells. The label is the click target;
+   the real checkbox stays in the DOM (visually hidden) so form events,
+   focus rings, and screen readers all work. */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 38px;
+  height: 22px;
+  flex-shrink: 0;
+  cursor: pointer;
+  justify-self: start;
+}
+.toggle input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.toggle-track {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  border: 1px solid var(--fg-muted);
+  border-radius: 999px;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.toggle-track::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: var(--fg-muted);
+  border-radius: 50%;
+  transition: transform 140ms ease, background-color 140ms ease;
+}
+.toggle input:checked ~ .toggle-track {
+  border-color: var(--accent);
+  background: var(--accent-soft, rgba(77, 171, 255, 0.16));
+}
+.toggle input:checked ~ .toggle-track::before {
+  background: var(--accent);
+  transform: translateX(16px);
+}
+.toggle input:focus-visible ~ .toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.toggle input:disabled ~ .toggle-track {
+  opacity: .4;
+  cursor: not-allowed;
+}

@@ -622,7 +622,10 @@ const configView = {
 
           <div class="config-field" data-field="enabled">
             <label for="cf-tc-enabled">ENABLED</label>
-            <input id="cf-tc-enabled" name="enabled" type="checkbox"${enabled ? ' checked' : ''}>
+            <label class="toggle" for="cf-tc-enabled">
+              <input id="cf-tc-enabled" name="enabled" type="checkbox"${enabled ? ' checked' : ''}>
+              <span class="toggle-track"></span>
+            </label>
             <span class="config-field-hint">Default applied to mounts/autodjs/relays without per-source overrides.</span>
           </div>
 
