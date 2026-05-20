@@ -888,7 +888,7 @@ const configView = {
           ${rows || '<div class="config-placeholder">— no mounts configured —</div>'}
         </div>
         <div class="mounts-actions">
-          <button type="button" class="btn btn-ghost" id="mounts-add"${this.mountsEditingIdx != null ? ' disabled' : ''}>
+          <button type="button" class="btn btn-ghost" id="mounts-add">
             + ADD MOUNT
           </button>
         </div>
@@ -1070,7 +1070,17 @@ const configView = {
     });
 
     add.addEventListener('click', () => {
-      if (this.mountsEditingIdx != null) return;
+      // Discard any open editor first (revert existing entries, drop new
+      // unsaved ones) so the user can hit ADD without first cancelling.
+      if (this.mountsEditingIdx != null) {
+        const openIdx = this.mountsEditingIdx;
+        const original = this.current.mounts?.[openIdx];
+        if (original) {
+          this.mountsWorking[openIdx] = this.mountToWorking(original);
+        } else {
+          this.mountsWorking.splice(openIdx, 1);
+        }
+      }
       this.mountsWorking.push({
         path: '',
         source_password: '',
@@ -1245,7 +1255,7 @@ const configView = {
           ${rows || '<div class="config-placeholder">— no relays configured —</div>'}
         </div>
         <div class="mounts-actions">
-          <button type="button" class="btn btn-ghost" id="relays-add"${this.relaysEditingIdx != null ? ' disabled' : ''}>
+          <button type="button" class="btn btn-ghost" id="relays-add">
             + ADD RELAY
           </button>
         </div>
@@ -1433,7 +1443,15 @@ const configView = {
     });
 
     add.addEventListener('click', () => {
-      if (this.relaysEditingIdx != null) return;
+      if (this.relaysEditingIdx != null) {
+        const openIdx = this.relaysEditingIdx;
+        const original = this.current.relays?.[openIdx];
+        if (original) {
+          this.relaysWorking[openIdx] = this.relayToWorking(original);
+        } else {
+          this.relaysWorking.splice(openIdx, 1);
+        }
+      }
       this.relaysWorking.push({
         mount: '',
         upstream: '',
@@ -1604,7 +1622,7 @@ const configView = {
           ${rows || '<div class="config-placeholder">— no users configured —</div>'}
         </div>
         <div class="mounts-actions">
-          <button type="button" class="btn btn-ghost" id="users-add"${this.usersEditingIdx != null ? ' disabled' : ''}>
+          <button type="button" class="btn btn-ghost" id="users-add">
             + ADD USER
           </button>
         </div>
@@ -1770,7 +1788,15 @@ const configView = {
     });
 
     add.addEventListener('click', () => {
-      if (this.usersEditingIdx != null) return;
+      if (this.usersEditingIdx != null) {
+        const openIdx = this.usersEditingIdx;
+        const original = this.current.auth?.users?.[openIdx];
+        if (original) {
+          this.usersWorking[openIdx] = this.userToWorking(original);
+        } else {
+          this.usersWorking.splice(openIdx, 1);
+        }
+      }
       this.usersWorking.push({ username: '', role: 'operator', password: '' });
       this.usersEditingIdx = this.usersWorking.length - 1;
       this.drawUsersPane();
@@ -1897,7 +1923,7 @@ const configView = {
           ${rows || '<div class="config-placeholder">— no autodjs configured —</div>'}
         </div>
         <div class="mounts-actions">
-          <button type="button" class="btn btn-ghost" id="adj-add"${this.adjEditingIdx != null ? ' disabled' : ''}>
+          <button type="button" class="btn btn-ghost" id="adj-add">
             + ADD AUTODJ
           </button>
         </div>
@@ -2074,7 +2100,18 @@ const configView = {
     });
 
     add.addEventListener('click', () => {
-      if (this.adjEditingIdx != null) return;
+      // If an editor is already open, discard its in-progress edits first
+      // (revert to canonical state for existing entries; drop unsaved new
+      // ones entirely). Then append a fresh entry and open it.
+      if (this.adjEditingIdx != null) {
+        const openIdx = this.adjEditingIdx;
+        const original = this.current.autodjs?.[openIdx];
+        if (original) {
+          this.adjWorking[openIdx] = this.adjToWorking(original);
+        } else {
+          this.adjWorking.splice(openIdx, 1);
+        }
+      }
       this.adjWorking.push({
         mount: '',
         folder: '',
