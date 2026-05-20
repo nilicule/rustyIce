@@ -36,6 +36,89 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// ─── folder picker modal ───────────────────────────────────────────────
+// Server-side filesystem browser. The autodj editor opens this when the
+// user clicks BROWSE… next to the FOLDER input. Returns a chosen path
+// via a callback so the trigger decides where to write it.
+const folderPicker = {
+  currentPath: '',
+  onSelect: null,
+
+  async open(startPath, onSelect) {
+    this.onSelect = onSelect;
+    await this.navigate(startPath || '');
+    $('folder-picker').classList.remove('hidden');
+    // Trap initial focus on the select button.
+    const sel = $('folder-picker-select');
+    if (sel) sel.focus();
+  },
+
+  close() {
+    $('folder-picker').classList.add('hidden');
+    this.onSelect = null;
+  },
+
+  async navigate(path) {
+    const body = $('folder-picker-body');
+    body.innerHTML = '<div class="config-placeholder">loading…</div>';
+    try {
+      const url = '/api/fs/listdir' + (path ? `?path=${encodeURIComponent(path)}` : '');
+      const res = await fetch(url);
+      if (res.status === 401) { this.close(); location.hash = ''; return; }
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        const msg = payload?.error || res.statusText;
+        body.innerHTML = `<div class="folder-picker-error">Cannot open ${escapeHtml(payload?.path || path)}: ${escapeHtml(msg)}</div>`;
+        return;
+      }
+      this.currentPath = payload.path;
+      $('folder-picker-path').textContent = payload.path;
+
+      const rows = [];
+      if (payload.parent) {
+        rows.push(`
+          <li>
+            <button type="button" class="folder-picker-row is-parent" data-folder-picker-action="cd" data-path="${escapeHtml(payload.parent)}">
+              <span class="folder-picker-row-icon">↑</span>
+              <span>.. (parent)</span>
+            </button>
+          </li>
+        `);
+      }
+      for (const entry of payload.entries) {
+        if (entry.is_dir) {
+          const child = (payload.path === '/' ? '' : payload.path) + '/' + entry.name;
+          rows.push(`
+            <li>
+              <button type="button" class="folder-picker-row" data-folder-picker-action="cd" data-path="${escapeHtml(child)}">
+                <span class="folder-picker-row-icon">▸</span>
+                <span>${escapeHtml(entry.name)}</span>
+              </button>
+            </li>
+          `);
+        } else {
+          rows.push(`
+            <li>
+              <div class="folder-picker-row is-file" aria-disabled="true">
+                <span class="folder-picker-row-icon">·</span>
+                <span>${escapeHtml(entry.name)}</span>
+              </div>
+            </li>
+          `);
+        }
+      }
+      body.innerHTML = `<ul class="folder-picker-list">${rows.join('') || '<li><div class="config-placeholder">— empty —</div></li>'}</ul>`;
+    } catch (e) {
+      body.innerHTML = `<div class="folder-picker-error">Network error: ${escapeHtml(e.message)}</div>`;
+    }
+  },
+
+  select() {
+    if (this.onSelect) this.onSelect(this.currentPath);
+    this.close();
+  },
+};
+
 // ─── toasts ────────────────────────────────────────────────────────────
 // Top-right overlay notifications. Use for transient confirmations
 // (saved, discarded). Sticky state info still belongs in the inline
@@ -1970,8 +2053,11 @@ const configView = {
         </legend>
 
         ${adjTextField(idx, 'mount', 'PATH', a.mount, { required: true, placeholder: '/lofi' })}
-        ${adjTextField(idx, 'folder', 'FOLDER', a.folder,
-            { required: true, placeholder: '/var/lib/rustyice/lofi' })}
+        ${adjTextField(idx, 'folder', 'FOLDER', a.folder, {
+          required: true,
+          placeholder: '/var/lib/rustyice/lofi',
+          trailing: `<button type="button" class="btn btn-ghost folder-browse-btn" data-adj-action="browse-folder" data-idx="${idx}">BROWSE…</button>`,
+        })}
 
         <div class="config-field" data-field="enabled">
           <div class="config-field-label">
@@ -2029,14 +2115,27 @@ const configView = {
     const add = $('adj-add');
 
     list.addEventListener('click', (e) => {
+      const browseBtn = e.target.closest('[data-adj-action="browse-folder"]');
       const removeBtn = e.target.closest('[data-adj-action="remove"]');
       const confirmRemoveBtn = e.target.closest('[data-adj-action="confirm-remove"]');
       const cancelRemoveBtn = e.target.closest('[data-adj-action="cancel-remove"]');
       const saveBtn = e.target.closest('[data-adj-action="save-edit"]');
       const cancelBtn = e.target.closest('[data-adj-action="cancel-edit"]');
-      const editBtn = removeBtn || confirmRemoveBtn || cancelRemoveBtn || saveBtn || cancelBtn
+      const editBtn = browseBtn || removeBtn || confirmRemoveBtn || cancelRemoveBtn || saveBtn || cancelBtn
         ? null
         : e.target.closest('[data-adj-action="edit"]');
+
+      if (browseBtn) {
+        const idx = Number(browseBtn.dataset.idx);
+        // Seed the picker with the current folder value if any; the
+        // backend falls back to home_dir when the string is empty.
+        const current = $(`cf-a${idx}-folder`)?.value?.trim() ?? '';
+        folderPicker.open(current, (chosen) => {
+          const input = $(`cf-a${idx}-folder`);
+          if (input) input.value = chosen;
+        });
+        return;
+      }
 
       if (removeBtn) {
         this.adjPendingRemoveIdx = Number(removeBtn.dataset.idx);
@@ -2338,13 +2437,16 @@ function adjTextField(idx, name, label, value, opts = {}) {
   const type = opts.type || 'text';
   const placeholder = opts.placeholder ? ` placeholder="${escapeHtml(opts.placeholder)}"` : '';
   const required = opts.required ? ' required' : '';
+  // `trailing` is a raw HTML snippet (e.g. a BROWSE button) that sits in
+  // the third grid column right of the input — useful for folder pickers.
+  const trailing = opts.trailing || '<span></span>';
   return `
     <div class="config-field" data-field="${name}">
       <div class="config-field-label">
         <label for="cf-a${idx}-${name}">${label}</label>
       </div>
       <input id="cf-a${idx}-${name}" name="${name}" type="${type}" value="${escapeHtml(String(value ?? ''))}"${placeholder}${required}>
-      <span></span>
+      ${trailing}
     </div>
   `;
 }
@@ -2963,5 +3065,22 @@ $('viz-toggle').addEventListener('click', (e) => {
 });
 
 // ─── boot ──────────────────────────────────────────────────────────────
+// Folder picker — single delegate covers backdrop, foot buttons, and
+// the directory-row buttons inside the body.
+$('folder-picker').addEventListener('click', (e) => {
+  const cd = e.target.closest('[data-folder-picker-action="cd"]');
+  if (cd) { folderPicker.navigate(cd.dataset.path); return; }
+  const select = e.target.closest('[data-folder-picker-action="select"]');
+  if (select) { folderPicker.select(); return; }
+  const cancel = e.target.closest('[data-folder-picker-action="cancel"]');
+  if (cancel) { folderPicker.close(); return; }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('folder-picker').classList.contains('hidden')) {
+    e.preventDefault();
+    folderPicker.close();
+  }
+});
+
 window.addEventListener('hashchange', route);
 route();

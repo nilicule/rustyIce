@@ -1,4 +1,4 @@
-use crate::api::{actions, auth, config, mounts, stats, title};
+use crate::api::{actions, auth, config, fs, mounts, stats, title};
 use crate::metrics::metrics_handler;
 use crate::state::AdminState;
 use axum::extract::Path;
@@ -63,6 +63,7 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route("/api/config/mounts", put(config::put_mounts))
         .route("/api/config/relays", put(config::put_relays))
         .route("/api/config/autodjs", put(config::put_autodjs))
+        .route("/api/fs/listdir", get(fs::list_dir))
         .route("/api/logout", post(auth::logout))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

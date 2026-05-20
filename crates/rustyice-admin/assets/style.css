@@ -1168,3 +1168,113 @@ a.stream-row:hover .stream-path::before {
   margin: 0 0 .25rem;
   padding: 0 .35rem;
 }
+
+/* ─── folder picker modal ─────────────────────────────────────────────── */
+.folder-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.folder-picker-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+}
+.folder-picker-panel {
+  position: relative;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  width: min(640px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.folder-picker-head {
+  padding: 1.25rem 1.5rem .75rem;
+  border-bottom: 1px solid var(--line);
+}
+.folder-picker-path {
+  display: block;
+  font-family: var(--mono);
+  font-size: .9rem;
+  color: var(--fg);
+  word-break: break-all;
+  margin: .25rem 0 0;
+  padding: .5rem .75rem;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.folder-picker-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: .5rem .75rem;
+}
+.folder-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+}
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  padding: .5rem .75rem;
+  font-family: var(--mono);
+  font-size: .85rem;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.folder-picker-row:hover,
+.folder-picker-row:focus-visible {
+  background: var(--bg-elev-2);
+  border-color: var(--accent);
+  outline: none;
+  color: var(--accent);
+}
+.folder-picker-row.is-file {
+  color: var(--fg-dim);
+  cursor: default;
+}
+.folder-picker-row.is-file:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-dim);
+}
+.folder-picker-row-icon {
+  font-size: .9rem;
+  width: 1.2rem;
+  display: inline-block;
+}
+.folder-picker-row.is-parent .folder-picker-row-icon { color: var(--accent); }
+.folder-picker-foot {
+  padding: .85rem 1.5rem 1rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+}
+.folder-picker-error {
+  padding: 1rem;
+  font-family: var(--mono);
+  font-size: .8rem;
+  color: var(--danger, #d04a4a);
+}
+.folder-browse-btn {
+  white-space: nowrap;
+  font-size: .72rem;
+  padding: .35rem .6rem;
+}

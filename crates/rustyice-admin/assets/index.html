@@ -185,6 +185,24 @@
 
   <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
+  <!-- Folder browser modal — driven by the autodj editor. Hidden by default. -->
+  <div id="folder-picker" class="folder-picker hidden" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
+    <div class="folder-picker-backdrop" data-folder-picker-action="cancel"></div>
+    <div class="folder-picker-panel">
+      <div class="folder-picker-head">
+        <p class="eyebrow" id="folder-picker-title">— PICK A FOLDER</p>
+        <code id="folder-picker-path" class="folder-picker-path">—</code>
+      </div>
+      <div class="folder-picker-body" id="folder-picker-body">
+        <div class="config-placeholder">loading…</div>
+      </div>
+      <div class="folder-picker-foot">
+        <button type="button" class="btn btn-ghost"   data-folder-picker-action="cancel">CANCEL</button>
+        <button type="button" class="btn btn-primary" data-folder-picker-action="select" id="folder-picker-select">USE THIS FOLDER</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>
