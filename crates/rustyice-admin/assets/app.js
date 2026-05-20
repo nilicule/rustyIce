@@ -835,7 +835,8 @@ const configView = {
   renderMounts() {
     // In-memory working copy. Mutated as the user adds/removes/edits.
     this.mountsWorking = (this.current.mounts || []).map((m) => this.mountToWorking(m));
-    this.mountsEditingIdx = null; // -1+ index, or null for "nothing open"
+    this.mountsEditingIdx = null;        // index or null while editing
+    this.mountsPendingRemoveIdx = null;  // index or null while confirming a remove
     this.drawMountsPane();
   },
 
@@ -857,11 +858,11 @@ const configView = {
 
   drawMountsPane() {
     const rows = this.mountsWorking
-      .map((m, idx) =>
-        idx === this.mountsEditingIdx
-          ? this.renderMountCardForm(m, idx)
-          : this.renderMountCollapsedRow(m, idx),
-      )
+      .map((m, idx) => {
+        if (idx === this.mountsEditingIdx) return this.renderMountCardForm(m, idx);
+        if (idx === this.mountsPendingRemoveIdx) return this.renderMountConfirmRemoveRow(m, idx);
+        return this.renderMountCollapsedRow(m, idx);
+      })
       .join('');
     const addingNew = this.mountsEditingIdx === this.mountsWorking.length - 1
       && this.mountsWorking.length > 0
@@ -880,6 +881,17 @@ const configView = {
     `;
     this.bindMountsPane();
     void addingNew; // referenced only for clarity; nothing to do with it here.
+  },
+
+  renderMountConfirmRemoveRow(m, idx) {
+    return `
+      <div class="mount-row mount-row-confirm" data-confirm-idx="${idx}" role="alertdialog">
+        <span class="mount-row-path">${escapeHtml(m.path || '(unnamed mount)')}</span>
+        <span class="mount-row-confirm-msg">Remove this mount?</span>
+        <button type="button" class="btn btn-ghost mount-row-confirm-cancel" data-action="cancel-remove">CANCEL</button>
+        <button type="button" class="btn btn-danger mount-row-confirm-ok" data-action="confirm-remove" data-idx="${idx}">REMOVE</button>
+      </div>
+    `;
   },
 
   renderMountCollapsedRow(m, idx) {
@@ -965,14 +977,32 @@ const configView = {
       // `data-action="edit"` on its outer element, so a click on the inner
       // × button would otherwise match both edit and remove.
       const removeBtn = e.target.closest('[data-action="remove"]');
+      const confirmRemoveBtn = e.target.closest('[data-action="confirm-remove"]');
+      const cancelRemoveBtn = e.target.closest('[data-action="cancel-remove"]');
       const saveBtn = e.target.closest('[data-action="save-edit"]');
       const cancelBtn = e.target.closest('[data-action="cancel-edit"]');
-      const editBtn = removeBtn || saveBtn || cancelBtn
+      const editBtn = removeBtn || confirmRemoveBtn || cancelRemoveBtn || saveBtn || cancelBtn
         ? null
         : e.target.closest('[data-action="edit"]');
 
       if (removeBtn) {
-        this.removeMountAtIndex(Number(removeBtn.dataset.idx));
+        // First click: swap the row for an inline confirm prompt.
+        this.mountsPendingRemoveIdx = Number(removeBtn.dataset.idx);
+        this.drawMountsPane();
+        // Move focus to the destructive button so Enter confirms.
+        const ok = list.querySelector('[data-action="confirm-remove"]');
+        if (ok) ok.focus();
+        return;
+      }
+      if (cancelRemoveBtn) {
+        this.mountsPendingRemoveIdx = null;
+        this.drawMountsPane();
+        return;
+      }
+      if (confirmRemoveBtn) {
+        const idx = Number(confirmRemoveBtn.dataset.idx);
+        this.mountsPendingRemoveIdx = null;
+        this.removeMountAtIndex(idx);
         return;
       }
       if (editBtn) {
@@ -1008,6 +1038,13 @@ const configView = {
     // when focus is inside a real button (e.g. the × remove) so its own
     // default Enter/Space behavior wins.
     list.addEventListener('keydown', (e) => {
+      // ESC dismisses an open remove-confirm prompt.
+      if (e.key === 'Escape' && this.mountsPendingRemoveIdx != null) {
+        e.preventDefault();
+        this.mountsPendingRemoveIdx = null;
+        this.drawMountsPane();
+        return;
+      }
       if (e.target.closest('button')) return;
       const row = e.target.closest('[data-action="edit"]');
       if (!row) return;
@@ -1038,10 +1075,9 @@ const configView = {
   },
 
   removeMountAtIndex(idx) {
-    if (!confirm(`Remove mount "${this.mountsWorking[idx].path || `#${idx + 1}`}"?`)) return;
-    // Build the post-remove list and send it to the server. The remaining
-    // mounts have blank password fields, which the server resolves to the
-    // existing per-mount passwords.
+    // Caller is responsible for any confirmation step. We just send the
+    // post-remove list to the server; blank password fields on the
+    // remaining entries are resolved server-side to the existing values.
     const next = this.mountsWorking.slice();
     next.splice(idx, 1);
     this.persistMounts(next, { successMessage: 'Mount removed.' });

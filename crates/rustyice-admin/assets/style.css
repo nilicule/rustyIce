@@ -1042,6 +1042,27 @@ a.stream-row:hover .stream-path::before {
 }
 .mount-row:hover .mount-row-edit,
 .mount-row:focus-visible .mount-row-edit { color: var(--accent); }
+/* In-row remove confirmation: replaces the collapsed row when the × is
+   clicked. Same shape as a row, accent-red border to signal the action
+   and tighter buttons so the prompt feels lightweight. */
+.mount-row.mount-row-confirm {
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto auto;
+  border-color: var(--danger, #d04a4a);
+  background: var(--danger-soft, rgba(208, 74, 74, .08));
+  cursor: default;
+}
+.mount-row-confirm-msg {
+  font-family: var(--mono);
+  font-size: .85rem;
+  color: var(--fg);
+}
+.mount-row-confirm-cancel,
+.mount-row-confirm-ok {
+  font-size: .72rem;
+  padding: .3rem .7rem;
+  letter-spacing: .12em;
+}
+
 /* Inline remove button on the collapsed row. Subtle by default; turns
    red on hover/focus so it reads as a destructive action. */
 .mount-row-remove {
