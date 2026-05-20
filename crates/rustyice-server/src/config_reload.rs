@@ -126,6 +126,16 @@ pub async fn apply_config(
         return Err(ApplyError::Auth(e.to_string()));
     }
 
+    // Use `old_cfg` (loaded once) for both the surviving-metadata update
+    // and the disappeared-mount removal below so they see a consistent
+    // snapshot.
+    let old_cfg = config.load_full();
+
+    // Update metadata for mounts that survive in the new config, and
+    // register entirely new mounts so the runtime registry matches the
+    // configured set. New mounts use the configured ring/burst sizes and
+    // start with the MP3 codec marker (the actual codec is set later when
+    // a source connects — matches the bootstrap behavior in main.rs).
     for mount_cfg in &new_cfg.mounts {
         if let Some(mount) = mounts.get(&mount_cfg.path) {
             let old_info = mount.info.load_full();
@@ -142,11 +152,48 @@ pub async fn apply_config(
                 },
             };
             mount.info.store(Arc::new(new_info));
+        } else {
+            let bus = Arc::new(crate::bus::TokioBroadcastBus::new(
+                new_cfg.limits.ring_size,
+                mount_cfg.burst_size.unwrap_or(new_cfg.limits.burst_size) as usize,
+            ));
+            mounts.add(Arc::new(rustyice_core::mount::ActiveMount::new(
+                rustyice_core::mount::MountInfo {
+                    path: mount_cfg.path.clone(),
+                    codec: rustyice_core::types::CodecId::MP3,
+                    source_password: mount_cfg.source_password.clone(),
+                    max_listeners: mount_cfg.max_listeners,
+                    metadata: rustyice_core::mount::MountMetadata {
+                        name: mount_cfg.name.clone(),
+                        description: mount_cfg.description.clone(),
+                        genre: mount_cfg.genre.clone(),
+                        url: mount_cfg.url.clone(),
+                    },
+                },
+                bus,
+            )));
+            info!(mount = %mount_cfg.path, "mount registered via reload");
+        }
+    }
+
+    // Remove plain-mount entries that disappeared from `[[mounts]]`. Only
+    // touches paths that were previously *configured* — dynamic mounts
+    // (created on-the-fly by sources authenticating with the global
+    // source_password) aren't in `old_cfg.mounts` so they're left alone,
+    // and autodj/relay-owned paths live in their own sections and are
+    // handled by those diffs below. Any active source/listeners on a
+    // removed mount get disconnected; that matches the operator's intent
+    // when they explicitly removed the mount from config.
+    let new_mount_paths: std::collections::HashSet<&str> =
+        new_cfg.mounts.iter().map(|m| m.path.as_str()).collect();
+    for old in &old_cfg.mounts {
+        if !new_mount_paths.contains(old.path.as_str()) {
+            let _ = mounts.remove(&old.path);
+            info!(mount = %old.path, "mount removed via reload");
         }
     }
 
     // ── AutoDJ diff ────────────────────────────────────────────────────────
-    let old_cfg = config.load_full();
     let new_paths: std::collections::HashSet<&str> =
         new_cfg.autodjs.iter().map(|a| a.mount.as_str()).collect();
 
