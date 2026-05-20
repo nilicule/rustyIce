@@ -384,9 +384,213 @@ const configView = {
   },
 
   renderServer() {
-    // Implemented in Task 15.
-    $('config-pane-body').innerHTML =
-      '<div class="config-placeholder">server form rendering wired in Task 15</div>';
+    const { server, logging, limits } = this.current;
+    this.snapshot = this.snapshotFromCurrent();
+    $('config-pane-body').innerHTML = `
+      <form class="config-form" id="config-server-form" novalidate>
+        <fieldset class="config-group">
+          <legend class="config-group-title">BIND &amp; HOST</legend>
+          ${this.field('stream_bind', 'STREAM BIND', server.stream_bind, { type: 'text', restart: true })}
+          ${this.field('admin_bind',  'ADMIN BIND',  server.admin_bind,  { type: 'text', restart: true })}
+          ${this.field('hostname',    'HOSTNAME',    server.hostname,    { type: 'text' })}
+        </fieldset>
+
+        <fieldset class="config-group">
+          <legend class="config-group-title">LOGGING</legend>
+          ${this.field('level',  'LEVEL',  logging.level,  { type: 'text' })}
+          ${this.selectField('format', 'FORMAT', logging.format, ['pretty', 'json'])}
+        </fieldset>
+
+        <fieldset class="config-group">
+          <legend class="config-group-title">LIMITS</legend>
+          ${this.field('max_listeners_global',   'MAX LISTENERS',   limits.max_listeners_global,   { type: 'number', min: 1 })}
+          ${this.field('ring_size',              'RING SIZE',       limits.ring_size,              { type: 'number', min: 1, restart: true })}
+          ${this.field('slow_listener_grace_s',  'SLOW GRACE (s)',  limits.slow_listener_grace_s,  { type: 'number', min: 0 })}
+          ${this.field('burst_size',             'BURST SIZE',      limits.burst_size,             { type: 'number', min: 0, hint: '0 disables burst' })}
+          ${this.field('source_max_kbps',        'SOURCE MAX KBPS', limits.source_max_kbps ?? '',  { type: 'number', min: 0, hint: 'blank = unlimited' })}
+        </fieldset>
+
+        <div class="config-form-actions">
+          <button type="button" class="btn btn-ghost"   id="config-server-discard" disabled>DISCARD</button>
+          <button type="submit"  class="btn btn-primary" id="config-server-save"    disabled>SAVE CHANGES</button>
+        </div>
+      </form>
+    `;
+    this.bindServerForm();
+  },
+
+  snapshotFromCurrent() {
+    const { server, logging, limits } = this.current;
+    return {
+      stream_bind: server.stream_bind,
+      admin_bind: server.admin_bind,
+      hostname: server.hostname,
+      level: logging.level,
+      format: logging.format,
+      max_listeners_global: limits.max_listeners_global,
+      ring_size: limits.ring_size,
+      slow_listener_grace_s: limits.slow_listener_grace_s,
+      burst_size: limits.burst_size,
+      source_max_kbps: limits.source_max_kbps,
+    };
+  },
+
+  field(name, label, value, opts = {}) {
+    const restart = opts.restart ? '<span class="restart-badge">RESTART REQUIRED</span>' : '';
+    const hint = opts.hint ? `<span class="config-field-hint">${escapeHtml(opts.hint)}</span>` : '';
+    const min = opts.min != null ? ` min="${opts.min}"` : '';
+    return `
+      <div class="config-field" data-field="${name}">
+        <label for="cf-${name}">${label}</label>
+        <input id="cf-${name}" name="${name}" type="${opts.type}" value="${escapeHtml(String(value ?? ''))}"${min}>
+        ${restart || hint || '<span></span>'}
+      </div>
+    `;
+  },
+
+  selectField(name, label, value, options) {
+    const opts = options
+      .map((o) => `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`)
+      .join('');
+    return `
+      <div class="config-field" data-field="${name}">
+        <label for="cf-${name}">${label}</label>
+        <select id="cf-${name}" name="${name}">${opts}</select>
+        <span></span>
+      </div>
+    `;
+  },
+
+  bindServerForm() {
+    const form = $('config-server-form');
+    const save = $('config-server-save');
+    const discard = $('config-server-discard');
+
+    const recomputeDirty = () => {
+      const current = this.collectServerForm();
+      const dirty = JSON.stringify(current) !== JSON.stringify(this.snapshot);
+      save.disabled = !dirty;
+      discard.disabled = !dirty;
+    };
+
+    form.addEventListener('input', recomputeDirty);
+    form.addEventListener('change', recomputeDirty);
+
+    discard.addEventListener('click', () => this.renderServer());
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      this.clearFieldErrors();
+      const collected = this.collectServerForm();
+      const body = this.buildServerPutBody(collected);
+      save.disabled = true;
+      discard.disabled = true;
+      try {
+        const res = await fetch('/api/config/server', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (res.status === 401) { location.hash = ''; return; }
+        const payload = await res.json().catch(() => null);
+        if (res.status === 200) {
+          this.snapshot = collected;
+          if (payload) {
+            this.current = {
+              ...this.current,
+              server: payload.server,
+              logging: payload.logging,
+              limits: payload.limits,
+              path: payload.path,
+              source: payload.source,
+            };
+            // Update banner: defaults-mode might have flipped to file-backed.
+            if (payload.source === 'defaults') this.maybeShowDefaultsBanner(payload);
+            else this.clearBanner();
+          }
+          this.showWarnings(payload?.applied_warnings || []);
+          save.disabled = true;
+          discard.disabled = true;
+        } else if ((res.status === 400 || res.status === 422) && payload?.field) {
+          this.markFieldError(payload.field, payload.error || 'invalid value');
+          recomputeDirty();
+        } else if (res.status === 500 && payload?.disk_written) {
+          this.showBanner(
+            'Saved to disk, but apply failed. Running server still uses the previous config; restart to load the new file.',
+            'error',
+          );
+          this.snapshot = collected;
+          save.disabled = true;
+          discard.disabled = true;
+        } else {
+          const msg = payload?.error || res.statusText;
+          this.showBanner(`Save failed: ${msg}`, 'error');
+          recomputeDirty();
+        }
+      } catch (err) {
+        this.showBanner(`Save failed: ${err.message}`, 'error');
+        recomputeDirty();
+      }
+    });
+  },
+
+  collectServerForm() {
+    const v = (id) => $(`cf-${id}`).value;
+    const nOrNull = (id) => {
+      const s = v(id).trim();
+      return s === '' ? null : Number(s);
+    };
+    const n = (id) => Number(v(id));
+    return {
+      stream_bind: v('stream_bind').trim(),
+      admin_bind: v('admin_bind').trim(),
+      hostname: v('hostname').trim(),
+      level: v('level').trim(),
+      format: v('format'),
+      max_listeners_global: n('max_listeners_global'),
+      ring_size: n('ring_size'),
+      slow_listener_grace_s: n('slow_listener_grace_s'),
+      burst_size: n('burst_size'),
+      source_max_kbps: nOrNull('source_max_kbps'),
+    };
+  },
+
+  buildServerPutBody(c) {
+    return {
+      server:  { stream_bind: c.stream_bind, admin_bind: c.admin_bind, hostname: c.hostname },
+      logging: { level: c.level, format: c.format },
+      limits:  {
+        max_listeners_global: c.max_listeners_global,
+        ring_size: c.ring_size,
+        slow_listener_grace_s: c.slow_listener_grace_s,
+        burst_size: c.burst_size,
+        source_max_kbps: c.source_max_kbps,
+      },
+    };
+  },
+
+  clearFieldErrors() {
+    document.querySelectorAll('.config-field-error').forEach((el) => el.remove());
+    document.querySelectorAll('.config-field').forEach((el) => el.classList.remove('has-error'));
+  },
+
+  markFieldError(fieldPath, msg) {
+    const leaf = fieldPath.includes('.') ? fieldPath.split('.').pop() : fieldPath;
+    const wrap = document.querySelector(`.config-field[data-field="${CSS.escape(leaf)}"]`);
+    if (!wrap) {
+      this.showBanner(`Validation: ${msg} (${fieldPath})`, 'error');
+      return;
+    }
+    wrap.classList.add('has-error');
+    const err = document.createElement('span');
+    err.className = 'config-field-error';
+    err.textContent = msg;
+    wrap.appendChild(err);
+  },
+
+  showWarnings(warnings) {
+    if (!warnings.length) { this.clearBanner(); return; }
+    this.showBanner(warnings.join(' · '), 'warning');
   },
 };
 
