@@ -759,7 +759,11 @@ a.stream-row:hover .stream-path::before {
 }
 .config-field {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr) auto;
+  /* Four columns: label · input · inline hint · filler.
+     The inline hint sits flush against the input regardless of how wide
+     the input is sized; the filler absorbs leftover row width so the
+     content doesn't sprawl. */
+  grid-template-columns: 200px minmax(0, auto) minmax(0, auto) minmax(0, 1fr);
   align-items: center;
   column-gap: 1rem;
   /* Row-gap is intentionally tighter than `.config-group`'s 1rem between-field
@@ -794,19 +798,24 @@ a.stream-row:hover .stream-path::before {
   outline: none;
   border-color: var(--accent);
 }
-/* Input fields shouldn't stretch to fill the full grid cell — values are
-   short and the giant boxes look unbalanced. Text gets a roomier cap
-   than numbers/selects to comfortably fit hostnames and bind addresses. */
+/* Each input type has its own width so the grid column auto-sizes to the
+   actual box (instead of stretching) and any inline hint can sit flush
+   against it. `max-width: 100%` lets the field shrink on narrow viewports. */
 .config-field input[type="text"] {
-  max-width: 24rem;
+  width: 24rem;
+  max-width: 100%;
   justify-self: start;
-  width: 100%;
+}
+.config-field input[type="password"] {
+  width: 18rem;
+  max-width: 100%;
+  justify-self: start;
 }
 .config-field input[type="number"],
 .config-field select {
-  max-width: 14rem;
+  width: 14rem;
+  max-width: 100%;
   justify-self: start;
-  width: 100%;
 }
 .config-field-hint {
   font-family: var(--mono);
