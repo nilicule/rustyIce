@@ -684,6 +684,11 @@ a.stream-row:hover .stream-path::before {
   color: var(--fg-dim);
   letter-spacing: .14em;
 }
+.footer-version {
+  color: inherit;
+  transition: color 120ms ease;
+}
+.footer-version:hover { color: var(--accent); }
 
 /* ─── responsive ─────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
