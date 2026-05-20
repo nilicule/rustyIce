@@ -136,6 +136,22 @@ async fn listener_handler(
                     listener_stats.bytes_sent, listener_stats.duration, listener_stats.disconnect_reason,
                 );
             }
+            Err(rustyice_core::error::OutputError::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::UnexpectedEof,
+                ) =>
+            {
+                // Listener (browser/player) closed the connection. Expected,
+                // not a server problem — keep it out of the warn stream.
+                tracing::debug!("listener disconnected: id={listener_id} kind={:?}", e.kind());
+            }
+            Err(rustyice_core::error::OutputError::Cancelled) => {
+                tracing::debug!("listener output cancelled: id={listener_id}");
+            }
             Err(e) => {
                 tracing::warn!("listener output errored: id={listener_id} err={e}");
             }
