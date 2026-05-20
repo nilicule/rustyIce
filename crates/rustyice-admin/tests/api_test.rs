@@ -942,3 +942,52 @@ async fn put_server_passes_through_warnings() {
         "expected stream_bind warning in {warnings:?}",
     );
 }
+
+#[tokio::test]
+async fn put_server_defaults_mode_bootstraps_config_toml() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let cookie = session_cookie(&state, "admin");
+    // config_path stays None (defaults mode).
+
+    let dir = tempfile::tempdir().unwrap();
+    let prev_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let body = server_patch_json("new-host");
+
+    let path_swap = state.config_path.clone();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+
+    let bootstrapped = dir.path().join("config.toml");
+    let file_exists = bootstrapped.exists();
+    let file_contents = if file_exists {
+        std::fs::read_to_string(&bootstrapped).unwrap()
+    } else {
+        String::new()
+    };
+    let path_after = path_swap.load_full().as_ref().clone();
+    std::env::set_current_dir(prev_cwd).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(file_exists, "config.toml should have been bootstrapped");
+    assert!(
+        file_contents.contains("new-host"),
+        "bootstrap missing patch value:\n{file_contents}",
+    );
+    assert!(path_after.is_some(), "config_path should be installed after first save");
+    assert!(applier.take().is_some());
+}
