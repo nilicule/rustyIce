@@ -839,3 +839,38 @@ a.stream-row:hover .stream-path::before {
   }
   .config-field { grid-template-columns: 1fr; align-items: stretch; gap: .35rem; }
 }
+
+/* ─── toasts ─────────────────────────────────────────────────────────── */
+/* Fixed top-right stack — overlays content, doesn't reflow layout. */
+.toast-stack {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  z-index: 100;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  min-width: 220px;
+  max-width: 360px;
+  padding: .65rem .9rem;
+  background: var(--bg-elev, #14171d);
+  border: 1px solid var(--accent);
+  font-family: var(--mono);
+  font-size: .85rem;
+  line-height: 1.35;
+  color: var(--fg);
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.toast.in {
+  opacity: 1;
+  transform: translateX(0);
+}
+.toast.success { border-color: #5cc46c; color: #5cc46c; }
+.toast.error   { border-color: #d04a4a; color: #d04a4a; }
+.toast.warning { border-color: var(--accent); }

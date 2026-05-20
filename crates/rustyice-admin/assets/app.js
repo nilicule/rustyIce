@@ -36,6 +36,26 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// ─── toasts ────────────────────────────────────────────────────────────
+// Top-right overlay notifications. Use for transient confirmations
+// (saved, discarded). Sticky state info still belongs in the inline
+// banner so it survives until acknowledged.
+function pushToast(message, kind = 'success', ms = 2500) {
+  const stack = $('toast-stack');
+  if (!stack) return;
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.textContent = message;
+  stack.appendChild(el);
+  // Trigger the transition on the next frame so the initial offset state
+  // is observed before the .in class lands.
+  requestAnimationFrame(() => el.classList.add('in'));
+  setTimeout(() => {
+    el.classList.remove('in');
+    setTimeout(() => el.remove(), 200);
+  }, ms);
+}
+
 // ─── state ─────────────────────────────────────────────────────────────
 let state = {
   view: 'landing',           // 'landing' | 'login' | 'admin' | 'mount-detail'
@@ -366,20 +386,6 @@ const configView = {
     b.textContent = message;
   },
 
-  // Briefly display a transient banner that auto-clears after `ms`. If the
-  // user navigates away or triggers another banner in the meantime, the
-  // pending timer is cancelled so we don't clobber later content.
-  flashBanner(message, kind = 'success', ms = 2500) {
-    this.showBanner(message, kind);
-    if (this._flashTimer) clearTimeout(this._flashTimer);
-    this._flashTimer = setTimeout(() => {
-      const b = $('config-banner');
-      // Only clear if the same flash is still up (i.e. nothing else replaced it).
-      if (b && b.textContent === message) this.clearBanner();
-      this._flashTimer = null;
-    }, ms);
-  },
-
   maybeShowDefaultsBanner(data) {
     if (data.source === 'defaults') {
       this.showBanner(
@@ -492,7 +498,7 @@ const configView = {
 
     discard.addEventListener('click', () => {
       this.renderServer();
-      this.flashBanner('Changes discarded.', 'success');
+      pushToast('Changes discarded.', 'success');
     });
 
     form.addEventListener('submit', async (e) => {
@@ -528,8 +534,10 @@ const configView = {
           if (warnings.length) {
             // Warnings stick around — operator needs to remember to restart.
             this.showBanner(`Saved. ${warnings.join(' · ')}`, 'warning');
+            pushToast('Configuration saved — restart required.', 'warning', 4000);
           } else {
-            this.flashBanner('Configuration saved.', 'success');
+            // No banner change; toast is the only feedback so layout stays put.
+            pushToast('Configuration saved.', 'success');
           }
         } else if ((res.status === 400 || res.status === 422) && payload?.field) {
           this.markFieldError(payload.field, payload.error || 'invalid value');
