@@ -345,6 +345,14 @@ const streamPlayer = {
 
 // ─── config view ──────────────────────────────────────────────────────
 const CONFIG_SECTIONS = ['server', 'transcode', 'autodjs', 'mounts', 'relays', 'users'];
+const CONFIG_SECTION_TITLES = {
+  server: 'Server',
+  transcode: 'Transcode',
+  mounts: 'Mounts',
+  autodjs: 'AutoDJs',
+  relays: 'Relays',
+  users: 'Users',
+};
 const configView = {
   section: 'server',
   snapshot: null,    // last server-confirmed values, for dirty tracking
@@ -353,6 +361,8 @@ const configView = {
   async enter(section) {
     this.section = CONFIG_SECTIONS.includes(section) ? section : 'server';
     this.setActiveNav();
+    const titleEl = $('config-title');
+    if (titleEl) titleEl.textContent = CONFIG_SECTION_TITLES[this.section] || 'Configuration';
     this.clearBanner();
     $('config-pane-body').innerHTML = '<div class="config-placeholder">loading…</div>';
     try {
@@ -826,11 +836,6 @@ const configView = {
       .join('');
     $('config-pane-body').innerHTML = `
       <div class="mounts-editor">
-        <p class="mounts-editor-note">
-          Each entry maps to a <code>[[mounts]]</code> block in <code>config.toml</code>.
-          Source clients authenticate against the mount-specific password. Passwords are
-          redacted on load — leave blank to keep the existing value.
-        </p>
         <div class="mounts-list" id="mounts-list">
           ${cards || '<div class="config-placeholder">— no mounts configured —</div>'}
         </div>

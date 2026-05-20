@@ -82,6 +82,7 @@ main {
   margin: 0 0 1.5rem;
 }
 .eyebrow .dash { margin-right: .35rem; }
+.eyebrow .eyebrow-sep { margin: 0 .55rem; color: var(--fg-dim); }
 .muted { color: var(--fg-muted); }
 .accent { color: var(--fg); position: relative; }
 .accent-dot { color: var(--accent); }
@@ -974,19 +975,6 @@ a.stream-row:hover .stream-path::before {
 
 /* ─── mounts editor ───────────────────────────────────────────────────── */
 .mounts-editor { display: flex; flex-direction: column; gap: 1.5rem; }
-.mounts-editor-note {
-  font-family: var(--mono);
-  font-size: .78rem;
-  color: var(--fg-muted);
-  line-height: 1.5;
-  margin: 0;
-  max-width: 52em;
-}
-.mounts-editor-note code {
-  font-family: var(--mono);
-  background: var(--bg-elev-2);
-  padding: 0 .3rem;
-}
 .mounts-list { display: flex; flex-direction: column; gap: 1.25rem; }
 .mount-edit-card {
   border: 1px solid var(--line);
