@@ -24,6 +24,7 @@ uuid.workspace        = true
 async-trait.workspace = true
 toml_edit.workspace   = true
 toml.workspace        = true
+bcrypt.workspace      = true
 
 [dev-dependencies]
 tokio        = { workspace = true, features = ["rt-multi-thread", "macros"] }

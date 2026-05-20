@@ -325,6 +325,89 @@ pub fn validate_mounts_patch(p: &MountsPatch) -> Result<(), WriteError> {
     Ok(())
 }
 
+// ─── Users section (under [[auth.users]]) ────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct UsersPatch {
+    pub users: Vec<UserSubPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserSubPatch {
+    pub username: String,
+    /// Already-hashed bcrypt string. The handler resolves any
+    /// plaintext/sentinel values to this form before constructing the patch.
+    pub password_bcrypt: String,
+    /// "admin" or "operator".
+    pub role: String,
+}
+
+/// # Errors
+/// Returns `WriteError::Validate` for empty/duplicate usernames, empty
+/// password hashes, or unknown role values.
+pub fn validate_users_patch(p: &UsersPatch) -> Result<(), WriteError> {
+    let mut seen = std::collections::HashSet::new();
+    for (idx, u) in p.users.iter().enumerate() {
+        let prefix = format!("users[{idx}]");
+        if u.username.trim().is_empty() {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.username"),
+                message: "must be non-empty".into(),
+            });
+        }
+        if !seen.insert(u.username.clone()) {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.username"),
+                message: format!("duplicate username: {}", u.username),
+            });
+        }
+        if u.password_bcrypt.is_empty() {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.password"),
+                message: "must be set when creating a user".into(),
+            });
+        }
+        if u.role != "admin" && u.role != "operator" {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.role"),
+                message: "must be \"admin\" or \"operator\"".into(),
+            });
+        }
+    }
+    // Always require at least one admin to remain — otherwise the operator
+    // locks themselves (and everyone else) out of the management surface.
+    if !p.users.iter().any(|u| u.role == "admin") {
+        return Err(WriteError::Validate {
+            field: "users".into(),
+            message: "at least one user must have the admin role".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Replace the `[[auth.users]]` array of tables in `doc`. Top-of-file and
+/// other sections' comments survive; comments inside individual user
+/// entries are not preserved. The `[auth]` table itself is left alone —
+/// the `source_password` and any other auth-level keys stay untouched.
+pub fn apply_users_patch(doc: &mut DocumentMut, p: &UsersPatch) {
+    // Ensure [auth] exists, then replace its `users` array of tables.
+    let auth = ensure_table(doc, "auth");
+    let auth_table = auth.as_table_mut().expect("ensure_table returned non-table");
+    if p.users.is_empty() {
+        auth_table.remove("users");
+        return;
+    }
+    let mut aot = toml_edit::ArrayOfTables::new();
+    for u in &p.users {
+        let mut t = toml_edit::Table::new();
+        t["username"] = value(u.username.clone());
+        t["password_bcrypt"] = value(u.password_bcrypt.clone());
+        t["role"] = value(u.role.clone());
+        aot.push(t);
+    }
+    auth_table.insert("users", Item::ArrayOfTables(aot));
+}
+
 // ─── AutoDJs section ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1274,6 +1357,85 @@ burst_size            = 65536
             ],
         };
         assert!(validate_mounts_patch(&patch).is_ok());
+    }
+
+    // ── Users ──────────────────────────────────────────────────────────────
+
+    fn basic_user(name: &str, role: &str) -> UserSubPatch {
+        UserSubPatch {
+            username: name.into(),
+            password_bcrypt: format!("$2y$12$bcrypt-hash-for-{name}"),
+            role: role.into(),
+        }
+    }
+
+    #[test]
+    fn users_patch_writes_array_of_tables_under_auth() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        apply_users_patch(
+            &mut doc,
+            &UsersPatch {
+                users: vec![basic_user("admin", "admin"), basic_user("alice", "operator")],
+            },
+        );
+        let out = doc.to_string();
+        assert!(out.contains("[[auth.users]]"));
+        assert!(out.contains(r#"username = "admin""#));
+        assert!(out.contains(r#"username = "alice""#));
+        assert!(out.contains(r#"role = "operator""#));
+    }
+
+    #[test]
+    fn users_patch_leaves_other_auth_keys_alone() {
+        let seeded = doc_without_mounts().to_string()
+            + "\n[auth]\nsource_password = \"keep-me\"\n";
+        let mut doc: DocumentMut = seeded.parse().unwrap();
+        apply_users_patch(
+            &mut doc,
+            &UsersPatch { users: vec![basic_user("admin", "admin")] },
+        );
+        let out = doc.to_string();
+        assert!(out.contains(r#"source_password = "keep-me""#), "lost source_password:\n{out}");
+        assert!(out.contains("[[auth.users]]"));
+    }
+
+    #[test]
+    fn users_validate_rejects_duplicate_usernames() {
+        let patch = UsersPatch {
+            users: vec![basic_user("admin", "admin"), basic_user("admin", "operator")],
+        };
+        let err = validate_users_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "users[1].username"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn users_validate_rejects_bad_role() {
+        let patch = UsersPatch {
+            users: vec![UserSubPatch { role: "superuser".into(), ..basic_user("admin", "admin") }],
+        };
+        let err = validate_users_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "users[0].role"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn users_validate_requires_at_least_one_admin() {
+        let patch = UsersPatch {
+            users: vec![basic_user("alice", "operator"), basic_user("bob", "operator")],
+        };
+        let err = validate_users_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, message } => {
+                assert_eq!(field, "users");
+                assert!(message.contains("admin"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     // ── AutoDJs ────────────────────────────────────────────────────────────

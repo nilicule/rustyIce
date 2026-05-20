@@ -112,6 +112,7 @@ mod tests {
                     .map(|(u, h)| UserConfig {
                         username: u.to_string(),
                         password_bcrypt: h.to_string(),
+                        role: rustyice_core::config::UserRole::Admin,
                     })
                     .collect(),
                 source_password: None,

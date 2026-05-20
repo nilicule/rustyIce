@@ -92,7 +92,7 @@ pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
 use crate::config_write::{
     self, AuthSubPatch, AutoDjSubPatch, AutoDjsPatch, LimitsSubPatch, LoggingSubPatch,
     MountSubPatch, MountsPatch, RelaySubPatch, RelaysPatch, ServerPatch as WritePatch,
-    ServerSubPatch, TranscodePatch, TranscodeSubPatch, WriteError,
+    ServerSubPatch, TranscodePatch, TranscodeSubPatch, UserSubPatch, UsersPatch, WriteError,
 };
 use rustyice_core::config::{LogFormat, TranscodeFormat};
 use serde::Deserialize;
@@ -440,6 +440,125 @@ pub async fn put_mounts(
 
     persist_and_apply(&state, "mounts", candidate, |doc| {
         config_write::apply_mounts_patch(doc, &patch);
+    })
+    .await
+}
+
+// ─── PUT /api/config/users ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct UsersPutBody {
+    pub users: Vec<UserSubBody>,
+}
+
+#[derive(Deserialize)]
+pub struct UserSubBody {
+    pub username: String,
+    /// Plaintext password. Optional: empty/missing/sentinel means "keep
+    /// the existing bcrypt hash for this username." Required when adding
+    /// a brand-new user.
+    #[serde(default)]
+    pub password: Option<String>,
+    pub role: String,
+}
+
+pub async fn put_users(
+    State(state): State<AdminState>,
+    Json(body): Json<UsersPutBody>,
+) -> impl IntoResponse {
+    let current = state.config.load_full();
+    // username → existing bcrypt hash, used as the fallback when a
+    // request omits the password (or sends the redacted sentinel).
+    let existing: std::collections::HashMap<&str, &str> = current
+        .auth
+        .users
+        .iter()
+        .map(|u| (u.username.as_str(), u.password_bcrypt.as_str()))
+        .collect();
+
+    let mut resolved: Vec<UserSubPatch> = Vec::with_capacity(body.users.len());
+    for (idx, u) in body.users.into_iter().enumerate() {
+        let username = u.username.trim().to_string();
+        if username.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(PutError {
+                    error: "must be non-empty".into(),
+                    field: Some(format!("users[{idx}].username")),
+                    disk_written: false,
+                }),
+            )
+                .into_response();
+        }
+        // Resolve the password:
+        //   - explicit plaintext (not blank, not "***") → hash now
+        //   - otherwise inherit the existing bcrypt for that username
+        //   - if neither applies, reject (new user with no password)
+        let supplied = u.password.as_deref();
+        let password_bcrypt = match supplied {
+            Some(p) if !p.is_empty() && p != "***" => {
+                // Hash on a blocking thread so we don't stall the runtime
+                // for the (cost=12) bcrypt round.
+                let plain = p.to_string();
+                match tokio::task::spawn_blocking(move || {
+                    bcrypt::hash(&plain, bcrypt::DEFAULT_COST)
+                })
+                .await
+                {
+                    Ok(Ok(h)) => h,
+                    Ok(Err(e)) => return io_error_response(format!("bcrypt hash failed: {e}")),
+                    Err(e) => return io_error_response(format!("bcrypt task join failed: {e}")),
+                }
+            }
+            _ => match existing.get(username.as_str()) {
+                Some(h) => (*h).to_string(),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(PutError {
+                            error: "new user requires a password".into(),
+                            field: Some(format!("users[{idx}].password")),
+                            disk_written: false,
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+        };
+        resolved.push(UserSubPatch {
+            username,
+            password_bcrypt,
+            role: u.role,
+        });
+    }
+    let patch = UsersPatch { users: resolved };
+
+    if let Err(WriteError::Validate { field, message }) =
+        config_write::validate_users_patch(&patch)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: message, field: Some(field), disk_written: false }),
+        )
+            .into_response();
+    }
+
+    let mut candidate: Config = (*current).clone();
+    candidate.auth.users = patch
+        .users
+        .iter()
+        .map(|u| rustyice_core::config::UserConfig {
+            username: u.username.clone(),
+            password_bcrypt: u.password_bcrypt.clone(),
+            role: match u.role.as_str() {
+                "admin" => rustyice_core::config::UserRole::Admin,
+                _ => rustyice_core::config::UserRole::Operator,
+            },
+        })
+        .collect();
+
+    persist_and_apply(&state, "users", candidate, |doc| {
+        config_write::apply_users_patch(doc, &patch);
     })
     .await
 }

@@ -353,6 +353,9 @@ const CONFIG_SECTION_TITLES = {
   relays: 'Relays',
   users: 'Users',
 };
+/// Sections that require admin role. Operators get redirected to /mounts
+/// when they navigate to one, and these items are hidden from the sidebar.
+const ADMIN_ONLY_SECTIONS = new Set(['server', 'transcode', 'users']);
 const configView = {
   section: 'server',
   snapshot: null,    // last server-confirmed values, for dirty tracking
@@ -379,8 +382,14 @@ const configView = {
   },
 
   setActiveNav() {
+    const isAdmin = state.role === 'admin';
     document.querySelectorAll('[data-config-section]').forEach((el) => {
-      el.classList.toggle('active', el.dataset.configSection === this.section);
+      const section = el.dataset.configSection;
+      el.classList.toggle('active', section === this.section);
+      // Hide the parent <li> for sections this user can't access so
+      // operators see a smaller sidebar.
+      const li = el.parentElement;
+      if (li) li.classList.toggle('hidden', !isAdmin && ADMIN_ONLY_SECTIONS.has(section));
     });
   },
 
@@ -415,6 +424,8 @@ const configView = {
       this.renderRelays();
     } else if (this.section === 'autodjs') {
       this.renderAutoDjs();
+    } else if (this.section === 'users') {
+      this.renderUsers();
     } else {
       $('config-pane-body').innerHTML =
         `<div class="config-placeholder">— ${escapeHtml(this.section.toUpperCase())} editor coming soon —</div>`;
@@ -1557,6 +1568,261 @@ const configView = {
     }
   },
 
+  // ── users section ──────────────────────────────────────────────────────
+  // Admin-only (the route is gated server-side; sidebar visibility is
+  // also gated client-side). Bulk save sends the full user list. The
+  // server hashes plaintext passwords on receipt; omitted/blank password
+  // fields fall back to the existing bcrypt hash for that username.
+  renderUsers() {
+    this.usersWorking = (this.current.auth?.users || []).map((u) => this.userToWorking(u));
+    this.usersEditingIdx = null;
+    this.usersPendingRemoveIdx = null;
+    this.drawUsersPane();
+  },
+
+  userToWorking(u) {
+    return {
+      username: u.username || '',
+      role: u.role || 'operator',
+      // Password is never round-tripped; we only send a plaintext value
+      // when the user types one into the form.
+      password: '',
+    };
+  },
+
+  drawUsersPane() {
+    const rows = this.usersWorking
+      .map((u, idx) => {
+        if (idx === this.usersEditingIdx) return this.renderUserCardForm(u, idx);
+        if (idx === this.usersPendingRemoveIdx) return this.renderUserConfirmRemoveRow(u, idx);
+        return this.renderUserCollapsedRow(u, idx);
+      })
+      .join('');
+    $('config-pane-body').innerHTML = `
+      <div class="mounts-editor">
+        <div class="mounts-list" id="users-list">
+          ${rows || '<div class="config-placeholder">— no users configured —</div>'}
+        </div>
+        <div class="mounts-actions">
+          <button type="button" class="btn btn-ghost" id="users-add"${this.usersEditingIdx != null ? ' disabled' : ''}>
+            + ADD USER
+          </button>
+        </div>
+      </div>
+    `;
+    this.bindUsersPane();
+  },
+
+  renderUserCollapsedRow(u, idx) {
+    const roleBadge = u.role === 'admin'
+      ? '<span class="mount-row-meta">ADMIN</span>'
+      : '<span class="mount-row-meta relay-row-off">OPERATOR</span>';
+    return `
+      <div class="mount-row" data-user-action="edit" data-idx="${idx}" role="button" tabindex="0">
+        <span class="mount-row-path">${escapeHtml(u.username || '(unnamed)')}</span>
+        <span class="mount-row-summary"></span>
+        <span class="mount-row-badges">${roleBadge}</span>
+        <button type="button" class="mount-row-remove" data-user-action="remove" data-idx="${idx}" title="Remove this user" aria-label="Remove user ${escapeHtml(u.username)}">×</button>
+        <span class="mount-row-edit">EDIT →</span>
+      </div>
+    `;
+  },
+
+  renderUserConfirmRemoveRow(u, idx) {
+    return `
+      <div class="mount-row mount-row-confirm" data-confirm-idx="${idx}" role="alertdialog">
+        <span class="mount-row-path">${escapeHtml(u.username || '(unnamed)')}</span>
+        <span class="mount-row-confirm-msg">Remove this user?</span>
+        <button type="button" class="btn btn-ghost mount-row-confirm-cancel" data-user-action="cancel-remove">CANCEL</button>
+        <button type="button" class="btn btn-danger mount-row-confirm-ok" data-user-action="confirm-remove" data-idx="${idx}">REMOVE</button>
+      </div>
+    `;
+  },
+
+  renderUserCardForm(u, idx) {
+    const isNew = !this.current.auth?.users?.some((cur) => cur.username === u.username) || u.username === '';
+    const passwordPlaceholder = isNew ? '(required for new user)' : '(unchanged if blank)';
+    return `
+      <fieldset class="mount-edit-card" data-user-idx="${idx}">
+        <legend class="mount-edit-card-title">
+          <span class="mount-edit-card-index">#${idx + 1}</span>
+          <span class="mount-edit-card-path">${escapeHtml(u.username || '(new user)')}</span>
+          <button type="button" class="btn btn-ghost mount-edit-card-remove" data-user-action="remove" data-idx="${idx}">REMOVE</button>
+        </legend>
+
+        ${userTextField(idx, 'username', 'USERNAME', u.username, { required: true })}
+        ${userTextField(idx, 'password', 'PASSWORD', '',
+            { type: 'password', placeholder: passwordPlaceholder })}
+        ${userSelectField(idx, 'role', 'ROLE', u.role, ['admin', 'operator'], {
+            help: 'Admins can edit server, transcode, and users. Operators are limited to mounts, relays, and autodjs.',
+        })}
+
+        <div class="config-form-actions">
+          <button type="button" class="btn btn-ghost"   data-user-action="cancel-edit">CANCEL</button>
+          <button type="button" class="btn btn-primary" data-user-action="save-edit">SAVE</button>
+        </div>
+      </fieldset>
+    `;
+  },
+
+  bindUsersPane() {
+    const list = $('users-list');
+    const add = $('users-add');
+
+    list.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('[data-user-action="remove"]');
+      const confirmRemoveBtn = e.target.closest('[data-user-action="confirm-remove"]');
+      const cancelRemoveBtn = e.target.closest('[data-user-action="cancel-remove"]');
+      const saveBtn = e.target.closest('[data-user-action="save-edit"]');
+      const cancelBtn = e.target.closest('[data-user-action="cancel-edit"]');
+      const editBtn = removeBtn || confirmRemoveBtn || cancelRemoveBtn || saveBtn || cancelBtn
+        ? null
+        : e.target.closest('[data-user-action="edit"]');
+
+      if (removeBtn) {
+        this.usersPendingRemoveIdx = Number(removeBtn.dataset.idx);
+        this.drawUsersPane();
+        const ok = list.querySelector('[data-user-action="confirm-remove"]');
+        if (ok) ok.focus();
+        return;
+      }
+      if (cancelRemoveBtn) {
+        this.usersPendingRemoveIdx = null;
+        this.drawUsersPane();
+        return;
+      }
+      if (confirmRemoveBtn) {
+        const idx = Number(confirmRemoveBtn.dataset.idx);
+        this.usersPendingRemoveIdx = null;
+        this.removeUserAtIndex(idx);
+        return;
+      }
+      if (editBtn) {
+        if (this.usersEditingIdx != null) return;
+        this.usersEditingIdx = Number(editBtn.dataset.idx);
+        this.drawUsersPane();
+        const f = $(`cf-u${this.usersEditingIdx}-username`);
+        if (f) f.focus();
+        return;
+      }
+      if (cancelBtn) {
+        const idx = this.usersEditingIdx;
+        const original = this.current.auth?.users?.[idx];
+        if (original) {
+          this.usersWorking[idx] = this.userToWorking(original);
+        } else {
+          this.usersWorking.splice(idx, 1);
+        }
+        this.usersEditingIdx = null;
+        this.drawUsersPane();
+        pushToast('Edit cancelled.', 'success');
+        return;
+      }
+      if (saveBtn) {
+        this.saveCurrentUserEdit();
+        return;
+      }
+    });
+
+    list.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.usersPendingRemoveIdx != null) {
+        e.preventDefault();
+        this.usersPendingRemoveIdx = null;
+        this.drawUsersPane();
+        return;
+      }
+      if (e.target.closest('button')) return;
+      const row = e.target.closest('[data-user-action="edit"]');
+      if (!row) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        row.click();
+      }
+    });
+
+    add.addEventListener('click', () => {
+      if (this.usersEditingIdx != null) return;
+      this.usersWorking.push({ username: '', role: 'operator', password: '' });
+      this.usersEditingIdx = this.usersWorking.length - 1;
+      this.drawUsersPane();
+      const f = $(`cf-u${this.usersEditingIdx}-username`);
+      if (f) f.focus();
+    });
+  },
+
+  removeUserAtIndex(idx) {
+    const next = this.usersWorking.slice();
+    next.splice(idx, 1);
+    this.persistUsers(next, { successMessage: 'User removed.' });
+  },
+
+  saveCurrentUserEdit() {
+    const idx = this.usersEditingIdx;
+    if (idx == null) return;
+    this.clearFieldErrors();
+    this.usersWorking[idx] = this.readUserFromDom(idx);
+    if (!this.usersWorking[idx].username) {
+      this.markFieldError(`users[${idx}].username`, 'must be non-empty');
+      return;
+    }
+    this.persistUsers(this.usersWorking, { successMessage: 'User saved.' });
+  },
+
+  readUserFromDom(idx) {
+    const v = (k) => $(`cf-u${idx}-${k}`)?.value ?? '';
+    return {
+      username: v('username').trim(),
+      role: v('role') || 'operator',
+      password: v('password'),
+    };
+  },
+
+  userWorkingToPutBody(u) {
+    const body = { username: u.username, role: u.role };
+    if (u.password) body.password = u.password;
+    return body;
+  },
+
+  async persistUsers(workingList, { successMessage }) {
+    const body = { users: workingList.map((u) => this.userWorkingToPutBody(u)) };
+    try {
+      const res = await fetch('/api/config/users', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) { location.hash = ''; return; }
+      if (res.status === 403) {
+        this.showBanner('Forbidden — admin role required to manage users.', 'error');
+        return;
+      }
+      const payload = await res.json().catch(() => null);
+      if (res.status === 200) {
+        if (payload) {
+          this.current = {
+            ...this.current,
+            auth: payload.auth,
+            path: payload.path,
+            source: payload.source,
+          };
+        }
+        this.renderUsers();
+        pushToast(successMessage, 'success');
+      } else if ((res.status === 400 || res.status === 422) && payload?.field) {
+        this.markFieldError(payload.field, payload.error || 'invalid value');
+      } else if (res.status === 500 && payload?.disk_written) {
+        this.showBanner(
+          'Saved to disk, but apply failed. Running server still uses the previous config; restart to load the new file.',
+          'error',
+        );
+      } else {
+        this.showBanner(`Save failed: ${payload?.error || res.statusText}`, 'error');
+      }
+    } catch (err) {
+      this.showBanner(`Save failed: ${err.message}`, 'error');
+    }
+  },
+
   // ── autodjs section ────────────────────────────────────────────────────
   // Same accordion UX as mounts/relays. Differences:
   // - `folder` is required (filesystem path to the music library)
@@ -2031,6 +2297,41 @@ function adjNumberField(idx, name, label, value, opts = {}) {
   `;
 }
 
+// ─── users editor helpers (separate `cf-u${idx}-*` ID namespace) ────────
+function userTextField(idx, name, label, value, opts = {}) {
+  const type = opts.type || 'text';
+  const placeholder = opts.placeholder ? ` placeholder="${escapeHtml(opts.placeholder)}"` : '';
+  const required = opts.required ? ' required' : '';
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-u${idx}-${name}">${label}</label>
+      </div>
+      <input id="cf-u${idx}-${name}" name="${name}" type="${type}" value="${escapeHtml(String(value ?? ''))}"${placeholder}${required}>
+      <span></span>
+    </div>
+  `;
+}
+
+function userSelectField(idx, name, label, value, options, extra = {}) {
+  const opts = options
+    .map((o) => `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`)
+    .join('');
+  const help = extra.help
+    ? `<p class="config-field-help">${escapeHtml(extra.help)}</p>`
+    : '';
+  return `
+    <div class="config-field" data-field="${name}">
+      <div class="config-field-label">
+        <label for="cf-u${idx}-${name}">${label}</label>
+      </div>
+      <select id="cf-u${idx}-${name}" name="${name}">${opts}</select>
+      <span></span>
+      ${help}
+    </div>
+  `;
+}
+
 function adjSelectField(idx, name, label, value, options, extra = {}) {
   const opts = options
     .map((o) => `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`)
@@ -2062,15 +2363,24 @@ async function route() {
   const streamMatch = hash.match(/^#stream\/(.+)$/);
   if (hash === '#admin') {
     const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
-    if (me) enterAdmin(me.user);
+    if (me) { state.role = me.role || 'operator'; enterAdmin(me.user); }
     else enterLogin();
   } else if (configMatch) {
     const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
     if (!me) { enterLogin(); return; }
-    enterConfig(me.user, configMatch[1] || 'server');
+    state.role = me.role || 'operator';
+    let requested = configMatch[1] || 'server';
+    // Operators can't see Server / Transcode / Users — redirect them to a
+    // section they can use (Mounts is the natural landing for stream ops).
+    if (state.role !== 'admin' && ADMIN_ONLY_SECTIONS.has(requested)) {
+      location.hash = '#admin/config/mounts';
+      return;
+    }
+    enterConfig(me.user, requested);
   } else if (detailMatch) {
     const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
     if (!me) { enterLogin(); return; }
+    state.role = me.role || 'operator';
     let mountPath;
     try { mountPath = decodeURIComponent(detailMatch[1]); }
     catch { location.hash = '#admin'; return; }

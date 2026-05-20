@@ -41,17 +41,25 @@ async fn serve_index() -> impl IntoResponse {
 }
 
 pub fn build_admin_router(state: AdminState) -> Router {
-    // Admin-only routes: anything that exposes listener-level detail or mutates
-    // server state goes here.
-    let protected = Router::new()
+    // Admin-only routes: change server-wide settings or user accounts.
+    let admin_only = Router::new()
+        .route("/api/config/server", put(config::put_server))
+        .route("/api/config/transcode", put(config::put_transcode))
+        .route("/api/config/users", put(config::put_users))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_admin,
+        ));
+
+    // Session-authenticated routes (any role): operational actions and the
+    // stream-y config sections (mounts/relays/autodjs) plus read-only fetch.
+    let session_only = Router::new()
         .route("/api/mounts/{path}/listeners", get(mounts::list_listeners))
         .route("/api/mounts/{path}/source", delete(actions::kick_source))
         .route("/api/mounts/{path}/title", put(title::set_title))
         .route("/api/mounts/{path}/title", delete(title::clear_title))
         .route("/api/listeners/{id}", delete(actions::kick_listener))
         .route("/api/config", get(config::get_config))
-        .route("/api/config/server", put(config::put_server))
-        .route("/api/config/transcode", put(config::put_transcode))
         .route("/api/config/mounts", put(config::put_mounts))
         .route("/api/config/relays", put(config::put_relays))
         .route("/api/config/autodjs", put(config::put_autodjs))
@@ -72,5 +80,5 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route("/api/me", get(auth::me))
         .route("/metrics", get(metrics_handler));
 
-    public.merge(protected).with_state(state)
+    public.merge(session_only).merge(admin_only).with_state(state)
 }

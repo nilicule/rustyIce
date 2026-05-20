@@ -70,7 +70,17 @@ fn make_state_with_admin(password: Option<&str>) -> AdminState {
             hostname: "localhost".to_string(),
         },
         logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
-        auth: AuthConfig::default(),
+        // Seed an admin user so `session_role` resolves cookies created by
+        // `session_cookie(&state, "admin")` to the Admin role. Without this,
+        // every admin-only endpoint test would 403.
+        auth: AuthConfig {
+            users: vec![rustyice_core::config::UserConfig {
+                username: "admin".to_string(),
+                password_bcrypt: "$2y$12$placeholder".to_string(),
+                role: rustyice_core::config::UserRole::Admin,
+            }],
+            source_password: None,
+        },
         limits: LimitsConfig {
             max_listeners_global: 100,
             ring_size: 64,
@@ -622,6 +632,7 @@ async fn get_config_redacts_secrets() {
     cfg.auth.users.push(UserConfig {
         username: "admin".into(),
         password_bcrypt: "$2y$12$realhashplaceholder".into(),
+        role: rustyice_core::config::UserRole::Admin,
     });
     cfg.auth.source_password = Some("supersecret".into());
     cfg.mounts.push(MountConfig {
@@ -729,7 +740,15 @@ fn make_state_with_applier(applier: Arc<RecordingApplier>) -> AdminState {
             hostname: "localhost".to_string(),
         },
         logging: LoggingConfig { level: "error".to_string(), format: LogFormat::Pretty },
-        auth: AuthConfig::default(),
+        // See `make_state_with_admin` — same admin-user seed.
+        auth: AuthConfig {
+            users: vec![rustyice_core::config::UserConfig {
+                username: "admin".to_string(),
+                password_bcrypt: "$2y$12$placeholder".to_string(),
+                role: rustyice_core::config::UserRole::Admin,
+            }],
+            source_password: None,
+        },
         limits: LimitsConfig {
             max_listeners_global: 100,
             ring_size: 64,
@@ -2056,4 +2075,204 @@ async fn put_autodjs_requires_auth() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ─── role-based access ────────────────────────────────────────────────────
+
+/// Helper that swaps the seeded "admin" user's role to operator so a
+/// session opened for "admin" resolves to an operator-level request.
+fn demote_admin_to_operator(state: &AdminState) {
+    let mut cfg = (*state.config.load_full()).clone();
+    for u in &mut cfg.auth.users {
+        if u.username == "admin" {
+            u.role = rustyice_core::config::UserRole::Operator;
+        }
+    }
+    state.config.store(Arc::new(cfg));
+}
+
+#[tokio::test]
+async fn put_server_forbidden_for_operator() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    demote_admin_to_operator(&state);
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(server_patch_json("h").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(applier.take().is_none(), "applier must not be called");
+}
+
+#[tokio::test]
+async fn put_mounts_allowed_for_operator() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    demote_admin_to_operator(&state);
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "mounts": [{ "path": "/op", "source_password": "p" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(applier.take().is_some(), "operator should be able to edit mounts");
+}
+
+#[tokio::test]
+async fn me_returns_role() {
+    let state = make_state();
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/me")
+                .header("Cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["user"], "admin");
+    assert_eq!(json["role"], "admin");
+}
+
+#[tokio::test]
+async fn put_users_adds_user_with_hashed_password() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "users": [
+            { "username": "admin", "role": "admin" },
+            { "username": "alice", "password": "plaintext-pw", "role": "operator" }
+        ]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/users")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.auth.users.len(), 2);
+    let alice = applied.auth.users.iter().find(|u| u.username == "alice").unwrap();
+    assert!(
+        bcrypt::verify("plaintext-pw", &alice.password_bcrypt).unwrap(),
+        "alice's password should hash to her bcrypt entry",
+    );
+    assert_eq!(alice.role, rustyice_core::config::UserRole::Operator);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[[auth.users]]"));
+    assert!(on_disk.contains(r#"username = "alice""#));
+    assert!(on_disk.contains(r#"role = "operator""#));
+}
+
+#[tokio::test]
+async fn put_users_rejects_when_no_admin_remains() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "users": [{ "username": "alice", "password": "p", "role": "operator" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/users")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("admin"));
+    assert!(applier.take().is_none());
+}
+
+#[tokio::test]
+async fn put_users_forbidden_for_operator() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    demote_admin_to_operator(&state);
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "users": [{ "username": "admin", "role": "admin" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/users")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(applier.take().is_none());
 }

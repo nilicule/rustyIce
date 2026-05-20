@@ -49,3 +49,24 @@ order         = "shuffle"           # or "sequential"
 format       = "mp3"
 sample_rate  = 44100
 bitrate_kbps = 128
+
+[[mounts]]
+path = "/stream2"
+source_password = "johnjohn"
+max_listeners = 128
+name = "Name 2"
+description = "This is my desc 2"
+genre = "house"
+
+[mounts.transcode]
+format = "mp3"
+sample_rate = 44100
+bitrate_kbps = 128
+
+[[mounts]]
+path = "/stream3"
+source_password = "nopassword"
+max_listeners = 128
+name = "This is a name"
+description = "Descriptioooon"
+genre = "Techno"

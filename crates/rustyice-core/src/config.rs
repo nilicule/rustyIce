@@ -110,10 +110,30 @@ pub struct AuthConfig {
     pub source_password: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    /// Full access: can edit server, transcode, users, plus all stream-y
+    /// sections (mounts, autodjs, relays).
+    Admin,
+    /// Stream operator: limited to mounts, autodjs, and relays. Cannot
+    /// change server settings or add/remove other users.
+    Operator,
+}
+
+fn default_user_role() -> UserRole {
+    // Backward compatibility: configs written before roles existed only
+    // contained admin-level accounts. Treat unspecified role as Admin so
+    // existing operators don't suddenly lose access on upgrade.
+    UserRole::Admin
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserConfig {
     pub username: String,
     pub password_bcrypt: String,
+    #[serde(default = "default_user_role")]
+    pub role: UserRole,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

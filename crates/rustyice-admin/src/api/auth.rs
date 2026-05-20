@@ -17,6 +17,33 @@ pub struct LoginRequest {
 #[derive(Serialize)]
 pub struct MeResponse {
     pub user: String,
+    /// "admin" or "operator". Defaults to "admin" if the configured user has
+    /// no explicit role (backward compatibility — see `UserRole`).
+    pub role: &'static str,
+}
+
+/// Resolve a session token to the user's role string. Looks up the
+/// authenticated user in the running config and returns "admin" or
+/// "operator". Returns `None` if the session is missing/expired or the
+/// user is no longer present in the config.
+pub fn session_role(state: &AdminState, headers: &HeaderMap) -> Option<(String, &'static str)> {
+    let token = session_token(headers)?;
+    let username = state.sessions.touch(&token)?;
+    let cfg = state.config.load_full();
+    let role = cfg
+        .auth
+        .users
+        .iter()
+        .find(|u| u.username == username)
+        .map(|u| match u.role {
+            rustyice_core::config::UserRole::Admin => "admin",
+            rustyice_core::config::UserRole::Operator => "operator",
+        })
+        // If the session is valid but the user isn't in the config anymore
+        // (e.g. config was edited out from under them), fall back to the
+        // most-restrictive role.
+        .unwrap_or("operator");
+    Some((username, role))
 }
 
 pub async fn login(
@@ -29,7 +56,19 @@ pub async fn login(
             let cookie = format!(
                 "{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400"
             );
-            let body = Json(MeResponse { user: req.username });
+            // Look up the role from the running config for the response body.
+            let cfg = state.config.load_full();
+            let role = cfg
+                .auth
+                .users
+                .iter()
+                .find(|u| u.username == req.username)
+                .map(|u| match u.role {
+                    rustyice_core::config::UserRole::Admin => "admin",
+                    rustyice_core::config::UserRole::Operator => "operator",
+                })
+                .unwrap_or("operator");
+            let body = Json(MeResponse { user: req.username, role });
             ([(header::SET_COOKIE, cookie)], body).into_response()
         }
         Ok(false) => (StatusCode::UNAUTHORIZED, "invalid credentials").into_response(),
@@ -53,8 +92,8 @@ pub async fn me(
     State(state): State<AdminState>,
     headers: HeaderMap,
 ) -> Response {
-    match session_token(&headers).and_then(|t| state.sessions.touch(&t)) {
-        Some(user) => Json(MeResponse { user }).into_response(),
+    match session_role(&state, &headers) {
+        Some((user, role)) => Json(MeResponse { user, role }).into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
     }
 }
@@ -69,6 +108,22 @@ pub async fn require_session(
 ) -> Response {
     match session_token(&headers).and_then(|t| state.sessions.touch(&t)) {
         Some(_) => next.run(request).await,
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
+
+/// Middleware that additionally requires the session's user to be an Admin.
+/// Returns `401` for an unauthenticated request, `403` for an authenticated
+/// non-admin.
+pub async fn require_admin(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    match session_role(&state, &headers) {
+        Some((_, "admin")) => next.run(request).await,
+        Some(_) => StatusCode::FORBIDDEN.into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
     }
 }
