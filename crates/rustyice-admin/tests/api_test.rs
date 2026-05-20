@@ -593,3 +593,88 @@ async fn delete_title_without_cookie_returns_401() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ─── config view ──────────────────────────────────────────────────────────
+
+use rustyice_core::config::{MountConfig, UserConfig};
+
+fn session_cookie(state: &AdminState, user: &str) -> String {
+    let token = state.sessions.create(user.to_string());
+    format!("rustyice_session={token}")
+}
+
+#[tokio::test]
+async fn get_config_requires_auth() {
+    let state = make_state();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/api/config").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn get_config_redacts_secrets() {
+    let state = make_state();
+    let cookie = session_cookie(&state, "admin");
+    let mut cfg = (*state.config.load_full()).clone();
+    cfg.auth.users.push(UserConfig {
+        username: "admin".into(),
+        password_bcrypt: "$2y$12$realhashplaceholder".into(),
+    });
+    cfg.auth.source_password = Some("supersecret".into());
+    cfg.mounts.push(MountConfig {
+        path: "/m".into(),
+        source_password: "mountpw".into(),
+        max_listeners: None,
+        name: None,
+        description: None,
+        genre: None,
+        url: None,
+        transcode: None,
+        burst_size: None,
+    });
+    state.config.store(Arc::new(cfg));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/config")
+                .header("Cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_str = std::str::from_utf8(&body).unwrap();
+    assert!(!body_str.contains("$2y$12$realhashplaceholder"), "bcrypt leaked: {body_str}");
+    assert!(!body_str.contains("supersecret"), "source_password leaked: {body_str}");
+    assert!(!body_str.contains("mountpw"), "mount source_password leaked: {body_str}");
+    assert!(body_str.contains("***"));
+}
+
+#[tokio::test]
+async fn get_config_includes_path_and_source() {
+    let state = make_state();
+    let cookie = session_cookie(&state, "admin");
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/config")
+                .header("Cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["path"], serde_json::Value::Null);
+    assert_eq!(json["source"], "defaults");
+}
