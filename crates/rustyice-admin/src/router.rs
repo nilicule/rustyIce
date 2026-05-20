@@ -52,6 +52,7 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route("/api/config", get(config::get_config))
         .route("/api/config/server", put(config::put_server))
         .route("/api/config/transcode", put(config::put_transcode))
+        .route("/api/config/mounts", put(config::put_mounts))
         .route("/api/logout", post(auth::logout))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

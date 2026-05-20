@@ -202,6 +202,146 @@ fn ensure_table<'a>(doc: &'a mut DocumentMut, name: &str) -> &'a mut Item {
     &mut doc[name]
 }
 
+// ─── Mounts section ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct MountsPatch {
+    pub mounts: Vec<MountSubPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MountSubPatch {
+    pub path: String,
+    pub source_password: String,
+    #[serde(default)]
+    pub max_listeners: Option<u32>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub burst_size: Option<u32>,
+    /// Optional per-mount transcode override. Reuses `TranscodeSubPatch`
+    /// (the same shape as the global transcode block).
+    #[serde(default)]
+    pub transcode: Option<TranscodeSubPatch>,
+}
+
+/// # Errors
+/// Returns `WriteError::Validate` for empty/duplicate paths, empty source
+/// passwords, or out-of-range per-mount transcode fields.
+pub fn validate_mounts_patch(p: &MountsPatch) -> Result<(), WriteError> {
+    let mut seen = std::collections::HashSet::new();
+    for (idx, m) in p.mounts.iter().enumerate() {
+        let prefix = format!("mounts[{idx}]");
+        if m.path.trim().is_empty() {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.path"),
+                message: "must be non-empty".into(),
+            });
+        }
+        if !m.path.starts_with('/') {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.path"),
+                message: "must start with \"/\"".into(),
+            });
+        }
+        if !seen.insert(m.path.clone()) {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.path"),
+                message: format!("duplicate mount path: {}", m.path),
+            });
+        }
+        if m.source_password.trim().is_empty() {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.source_password"),
+                message: "must be non-empty".into(),
+            });
+        }
+        if let Some(0) = m.max_listeners {
+            return Err(WriteError::Validate {
+                field: format!("{prefix}.max_listeners"),
+                message: "must be greater than 0 when set".into(),
+            });
+        }
+        if let Some(b) = m.burst_size {
+            const MAX_BURST: u32 = 16 * 1024 * 1024;
+            if b > MAX_BURST {
+                return Err(WriteError::Validate {
+                    field: format!("{prefix}.burst_size"),
+                    message: format!("must be <= {MAX_BURST} bytes (16 MiB)"),
+                });
+            }
+        }
+        if let Some(tc) = &m.transcode {
+            // Reuse the global transcode validator by wrapping into the
+            // same shape, but rewrite the error path to point at this mount.
+            let wrap = TranscodePatch { transcode: Some(TranscodeSubPatch {
+                format: tc.format.clone(),
+                sample_rate: tc.sample_rate,
+                bitrate_kbps: tc.bitrate_kbps,
+            }) };
+            if let Err(WriteError::Validate { field, message }) = validate_transcode_patch(&wrap) {
+                let sub = field.strip_prefix("transcode.").unwrap_or(&field);
+                return Err(WriteError::Validate {
+                    field: format!("{prefix}.transcode.{sub}"),
+                    message,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replace the `[[mounts]]` array of tables in `doc` with the patch's
+/// list. Top-of-file and other sections' comments survive; comments
+/// inside individual `[[mounts]]` entries are not preserved.
+pub fn apply_mounts_patch(doc: &mut DocumentMut, p: &MountsPatch) {
+    if p.mounts.is_empty() {
+        doc.as_table_mut().remove("mounts");
+        return;
+    }
+    let mut aot = toml_edit::ArrayOfTables::new();
+    for m in &p.mounts {
+        let mut t = toml_edit::Table::new();
+        t["path"] = value(m.path.clone());
+        t["source_password"] = value(m.source_password.clone());
+        if let Some(n) = m.max_listeners {
+            t["max_listeners"] = value(i64::from(n));
+        }
+        if let Some(s) = &m.name {
+            t["name"] = value(s.clone());
+        }
+        if let Some(s) = &m.description {
+            t["description"] = value(s.clone());
+        }
+        if let Some(s) = &m.genre {
+            t["genre"] = value(s.clone());
+        }
+        if let Some(s) = &m.url {
+            t["url"] = value(s.clone());
+        }
+        if let Some(b) = m.burst_size {
+            t["burst_size"] = value(i64::from(b));
+        }
+        if let Some(tc) = &m.transcode {
+            let mut sub = toml_edit::Table::new();
+            sub["format"] = value(tc.format.clone());
+            sub["sample_rate"] = value(i64::from(tc.sample_rate));
+            sub["bitrate_kbps"] = value(i64::from(tc.bitrate_kbps));
+            // Render as `[mounts.transcode]` inline-style sub-table.
+            sub.set_implicit(false);
+            t.insert("transcode", Item::Table(sub));
+        }
+        aot.push(t);
+    }
+    doc.insert("mounts", Item::ArrayOfTables(aot));
+}
+
 /// Atomically write `contents` to `path` by writing to a sibling tempfile
 /// and renaming. Caller is responsible for retrying on transient errors.
 ///
@@ -499,6 +639,236 @@ burst_size            = 65536
     fn transcode_validate_accepts_none() {
         let patch = TranscodePatch { transcode: None };
         assert!(validate_transcode_patch(&patch).is_ok());
+    }
+
+    // ── Mounts ─────────────────────────────────────────────────────────────
+
+    fn doc_with_two_mounts() -> &'static str {
+        r#"# top-of-file comment
+[server]
+stream_bind = "0.0.0.0:8000"
+admin_bind  = "127.0.0.1:8001"
+hostname    = "localhost"
+
+[logging]
+level  = "info"
+format = "pretty"
+
+[limits]
+max_listeners_global  = 500
+ring_size             = 64
+slow_listener_grace_s = 2
+burst_size            = 65536
+
+[[mounts]]
+path            = "/stream"
+source_password = "hackme"
+name            = "First"
+
+[[mounts]]
+path            = "/jazz"
+source_password = "jazz"
+"#
+    }
+
+    fn doc_without_mounts() -> &'static str {
+        r#"[server]
+stream_bind = "0.0.0.0:8000"
+admin_bind  = "127.0.0.1:8001"
+hostname    = "localhost"
+
+[logging]
+level  = "info"
+format = "pretty"
+
+[limits]
+max_listeners_global  = 500
+ring_size             = 64
+slow_listener_grace_s = 2
+burst_size            = 65536
+"#
+    }
+
+    fn basic_mount(path: &str) -> MountSubPatch {
+        MountSubPatch {
+            path: path.into(),
+            source_password: "pw".into(),
+            max_listeners: None,
+            name: None,
+            description: None,
+            genre: None,
+            url: None,
+            burst_size: None,
+            transcode: None,
+        }
+    }
+
+    #[test]
+    fn mounts_patch_adds_mount_to_empty_doc() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        apply_mounts_patch(
+            &mut doc,
+            &MountsPatch { mounts: vec![basic_mount("/m1")] },
+        );
+        let out = doc.to_string();
+        assert!(out.contains("[[mounts]]"));
+        assert!(out.contains(r#"path = "/m1""#));
+    }
+
+    #[test]
+    fn mounts_patch_replaces_existing_list() {
+        let mut doc: DocumentMut = doc_with_two_mounts().parse().unwrap();
+        apply_mounts_patch(
+            &mut doc,
+            &MountsPatch {
+                mounts: vec![MountSubPatch {
+                    path: "/replaced".into(),
+                    source_password: "newpw".into(),
+                    name: Some("Replaced".into()),
+                    ..basic_mount("/replaced")
+                }],
+            },
+        );
+        let out = doc.to_string();
+        assert!(out.contains(r#"path = "/replaced""#));
+        // Old mounts are gone.
+        assert!(!out.contains(r#"path = "/stream""#));
+        assert!(!out.contains(r#"path = "/jazz""#));
+        // Untouched sections survive (top-of-file comment, server block).
+        assert!(out.contains("# top-of-file comment"));
+        assert!(out.contains(r#"hostname    = "localhost""#));
+    }
+
+    #[test]
+    fn mounts_patch_with_empty_list_removes_block() {
+        let mut doc: DocumentMut = doc_with_two_mounts().parse().unwrap();
+        apply_mounts_patch(&mut doc, &MountsPatch { mounts: vec![] });
+        let out = doc.to_string();
+        assert!(!out.contains("[[mounts]]"));
+        assert!(out.contains("# top-of-file comment"));
+    }
+
+    #[test]
+    fn mounts_patch_writes_optional_fields_only_when_set() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        apply_mounts_patch(
+            &mut doc,
+            &MountsPatch {
+                mounts: vec![MountSubPatch {
+                    name: Some("My Radio".into()),
+                    max_listeners: Some(100),
+                    ..basic_mount("/m1")
+                }],
+            },
+        );
+        let out = doc.to_string();
+        assert!(out.contains(r#"name = "My Radio""#));
+        assert!(out.contains("max_listeners = 100"));
+        // Fields left None aren't written. (We don't check `burst_size`
+        // here because the seed doc carries a `[limits].burst_size = …`
+        // line that always survives.)
+        assert!(!out.contains("description"));
+        assert!(!out.contains("genre"));
+        assert!(!out.contains("url"));
+    }
+
+    #[test]
+    fn mounts_patch_writes_per_mount_transcode_block() {
+        let mut doc: DocumentMut = doc_without_mounts().parse().unwrap();
+        apply_mounts_patch(
+            &mut doc,
+            &MountsPatch {
+                mounts: vec![MountSubPatch {
+                    transcode: Some(TranscodeSubPatch {
+                        format: "vorbis".into(),
+                        sample_rate: 48_000,
+                        bitrate_kbps: 192,
+                    }),
+                    ..basic_mount("/m1")
+                }],
+            },
+        );
+        let out = doc.to_string();
+        assert!(out.contains("[mounts.transcode]"), "missing nested table:\n{out}");
+        assert!(out.contains(r#"format = "vorbis""#));
+        assert!(out.contains("sample_rate = 48000"));
+        assert!(out.contains("bitrate_kbps = 192"));
+    }
+
+    #[test]
+    fn mounts_validate_rejects_duplicate_paths() {
+        let patch = MountsPatch {
+            mounts: vec![basic_mount("/dup"), basic_mount("/dup")],
+        };
+        let err = validate_mounts_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, message } => {
+                assert_eq!(field, "mounts[1].path");
+                assert!(message.contains("/dup"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mounts_validate_rejects_empty_path() {
+        let patch = MountsPatch { mounts: vec![basic_mount("")] };
+        let err = validate_mounts_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "mounts[0].path"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mounts_validate_rejects_path_without_leading_slash() {
+        let patch = MountsPatch { mounts: vec![basic_mount("stream")] };
+        let err = validate_mounts_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, message } => {
+                assert_eq!(field, "mounts[0].path");
+                assert!(message.contains("/"), "message should mention /: {message}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mounts_validate_rejects_empty_source_password() {
+        let mut m = basic_mount("/m1");
+        m.source_password = "  ".into();
+        let patch = MountsPatch { mounts: vec![m] };
+        let err = validate_mounts_patch(&patch).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "mounts[0].source_password"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mounts_validate_rejects_bad_per_mount_transcode_format() {
+        let mut m = basic_mount("/m1");
+        m.transcode = Some(TranscodeSubPatch {
+            format: "flac".into(),
+            sample_rate: 44_100,
+            bitrate_kbps: 128,
+        });
+        let err = validate_mounts_patch(&MountsPatch { mounts: vec![m] }).unwrap_err();
+        match err {
+            WriteError::Validate { field, .. } => assert_eq!(field, "mounts[0].transcode.format"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mounts_validate_accepts_valid_list() {
+        let patch = MountsPatch {
+            mounts: vec![
+                MountSubPatch { name: Some("A".into()), ..basic_mount("/a") },
+                MountSubPatch { name: Some("B".into()), ..basic_mount("/b") },
+            ],
+        };
+        assert!(validate_mounts_patch(&patch).is_ok());
     }
 
     #[test]

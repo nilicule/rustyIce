@@ -1235,3 +1235,186 @@ async fn put_transcode_requires_auth() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ─── PUT /api/config/mounts tests ─────────────────────────────────────────
+
+fn mounts_body(mounts: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "mounts": mounts })
+}
+
+#[tokio::test]
+async fn put_mounts_replaces_list_on_disk_and_in_running_config() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = mounts_body(serde_json::json!([
+        { "path": "/m1", "source_password": "pw1", "name": "First" },
+        { "path": "/m2", "source_password": "pw2", "max_listeners": 100 }
+    ]));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert_eq!(applied.mounts.len(), 2);
+    assert_eq!(applied.mounts[0].path, "/m1");
+    assert_eq!(applied.mounts[1].path, "/m2");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[[mounts]]"));
+    assert!(on_disk.contains(r#"path = "/m1""#));
+    assert!(on_disk.contains(r#"path = "/m2""#));
+    assert!(on_disk.contains("max_listeners = 100"));
+}
+
+#[tokio::test]
+async fn put_mounts_empty_list_clears_block() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    // Seed config with two mounts.
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.mounts.push(rustyice_core::config::MountConfig {
+            path: "/m1".into(),
+            source_password: "p".into(),
+            max_listeners: None,
+            name: None,
+            description: None,
+            genre: None,
+            url: None,
+            burst_size: None,
+            transcode: None,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(mounts_body(serde_json::json!([])).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    assert!(applied.mounts.is_empty());
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("[[mounts]]"), "mounts block should be gone:\n{on_disk}");
+}
+
+#[tokio::test]
+async fn put_mounts_rejects_duplicate_paths() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = mounts_body(serde_json::json!([
+        { "path": "/dup", "source_password": "pw" },
+        { "path": "/dup", "source_password": "pw2" }
+    ]));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["field"], "mounts[1].path");
+    assert!(applier.take().is_none());
+}
+
+#[tokio::test]
+async fn put_mounts_with_per_mount_transcode_is_persisted() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = mounts_body(serde_json::json!([
+        {
+            "path": "/m1",
+            "source_password": "pw",
+            "transcode": { "format": "vorbis", "sample_rate": 48000, "bitrate_kbps": 96 }
+        }
+    ]));
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let applied = applier.take().expect("applier was called");
+    let tc = applied.mounts[0].transcode.as_ref().expect("transcode set");
+    assert_eq!(tc.sample_rate, 48000);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[mounts.transcode]"));
+    assert!(on_disk.contains(r#"format = "vorbis""#));
+}
+
+#[tokio::test]
+async fn put_mounts_requires_auth() {
+    let state = make_state();
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/mounts")
+                .header("Content-Type", "application/json")
+                .body(Body::from(mounts_body(serde_json::json!([])).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

@@ -90,8 +90,8 @@ pub async fn get_config(State(state): State<AdminState>) -> impl IntoResponse {
 // ─── PUT /api/config/server ────────────────────────────────────────────────
 
 use crate::config_write::{
-    self, LimitsSubPatch, LoggingSubPatch, ServerPatch as WritePatch, ServerSubPatch,
-    TranscodePatch, TranscodeSubPatch, WriteError,
+    self, LimitsSubPatch, LoggingSubPatch, MountSubPatch, MountsPatch,
+    ServerPatch as WritePatch, ServerSubPatch, TranscodePatch, TranscodeSubPatch, WriteError,
 };
 use rustyice_core::config::{LogFormat, TranscodeFormat};
 use serde::Deserialize;
@@ -265,6 +265,111 @@ pub async fn put_transcode(
 
     persist_and_apply(&state, "transcode", candidate, |doc| {
         config_write::apply_transcode_patch(doc, &patch);
+    })
+    .await
+}
+
+// ─── PUT /api/config/mounts ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MountsPutBody {
+    pub mounts: Vec<MountSubBody>,
+}
+
+#[derive(Deserialize)]
+pub struct MountSubBody {
+    pub path: String,
+    pub source_password: String,
+    #[serde(default)]
+    pub max_listeners: Option<u32>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub burst_size: Option<u32>,
+    #[serde(default)]
+    pub transcode: Option<TranscodeSubBody>,
+}
+
+pub async fn put_mounts(
+    State(state): State<AdminState>,
+    Json(body): Json<MountsPutBody>,
+) -> impl IntoResponse {
+    let patch = MountsPatch {
+        mounts: body
+            .mounts
+            .into_iter()
+            .map(|m| MountSubPatch {
+                path: m.path,
+                source_password: m.source_password,
+                max_listeners: m.max_listeners,
+                name: m.name,
+                description: m.description,
+                genre: m.genre,
+                url: m.url,
+                burst_size: m.burst_size,
+                transcode: m.transcode.map(|t| TranscodeSubPatch {
+                    format: t.format,
+                    sample_rate: t.sample_rate,
+                    bitrate_kbps: t.bitrate_kbps,
+                }),
+            })
+            .collect(),
+    };
+
+    if let Err(WriteError::Validate { field, message }) =
+        config_write::validate_mounts_patch(&patch)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: message, field: Some(field), disk_written: false }),
+        )
+            .into_response();
+    }
+
+    // Build candidate Config.
+    let current = state.config.load_full();
+    let mut candidate: Config = (*current).clone();
+    candidate.mounts = patch
+        .mounts
+        .iter()
+        .map(|m| MountConfig {
+            path: m.path.clone(),
+            source_password: m.source_password.clone(),
+            max_listeners: m.max_listeners,
+            name: m.name.clone(),
+            description: m.description.clone(),
+            genre: m.genre.clone(),
+            url: m.url.clone(),
+            burst_size: m.burst_size,
+            transcode: m.transcode.as_ref().map(|t| TranscodeConfig {
+                format: match t.format.as_str() {
+                    "mp3" => TranscodeFormat::Mp3,
+                    "vorbis" => TranscodeFormat::Vorbis,
+                    _ => unreachable!("validated above"),
+                },
+                sample_rate: t.sample_rate,
+                bitrate_kbps: t.bitrate_kbps,
+            }),
+        })
+        .collect();
+
+    // Cross-section: no path collisions with autodjs/relays.
+    if let Err(msg) = candidate.validate_paths() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PutError { error: msg, field: None, disk_written: false }),
+        )
+            .into_response();
+    }
+
+    persist_and_apply(&state, "mounts", candidate, |doc| {
+        config_write::apply_mounts_patch(doc, &patch);
     })
     .await
 }
