@@ -903,3 +903,42 @@ async fn put_server_requires_auth() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn put_server_passes_through_warnings() {
+    let applier = Arc::new(RecordingApplier::with_warnings(vec![
+        "stream_bind changed — restart required for this to take effect".into(),
+    ]));
+    let state = make_state_with_applier(applier.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    let body = serde_json::json!({
+        "server":  { "stream_bind": "0.0.0.0:9000", "admin_bind": "127.0.0.1:8001", "hostname": "h" },
+        "logging": { "level": "info", "format": "pretty" },
+        "limits":  { "max_listeners_global": 500, "ring_size": 64, "slow_listener_grace_s": 2, "burst_size": 65536, "source_max_kbps": null }
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/server")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    let warnings = json["applied_warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|w| w.as_str().unwrap().contains("stream_bind")),
+        "expected stream_bind warning in {warnings:?}",
+    );
+}
