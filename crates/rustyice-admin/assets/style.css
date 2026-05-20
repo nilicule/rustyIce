@@ -705,46 +705,18 @@ a.stream-row:hover .stream-path::before {
 }
 
 /* ─── config view ─────────────────────────────────────────────────────── */
-.config-grid {
-  display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  gap: 3rem;
-  align-items: start;
-}
-.config-nav {
-  position: sticky;
-  top: 2rem;
+
+/* Config view shares the page-level fixed nav, but extends it to fill the
+   viewport's vertical space so Users can pin to the bottom of the rail. */
+.config-side-nav {
+  bottom: 3rem;
   display: flex;
   flex-direction: column;
-  min-height: 60vh;
 }
-.config-nav-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: .25rem;
-}
-.config-nav-bottom {
+.config-side-nav-bottom {
   margin-top: auto;
   padding-top: 1rem;
   border-top: 1px solid var(--fg-muted);
-}
-.config-nav a {
-  display: block;
-  padding: .5rem .75rem .5rem 1rem;
-  font-family: var(--mono);
-  font-size: .85rem;
-  letter-spacing: .12em;
-  color: var(--fg-muted);
-  text-decoration: none;
-  border-left: 3px solid transparent;
-}
-.config-nav a:hover { color: var(--fg); }
-.config-nav a.active {
-  color: var(--accent);
-  border-left-color: var(--accent);
 }
 
 .config-pane { min-width: 0; }
@@ -846,17 +818,15 @@ a.stream-row:hover .stream-path::before {
   .page-side-nav-list { flex-direction: row; overflow-x: auto; }
   .page-side-nav a { border-left: none; border-bottom: 3px solid transparent; }
   .page-side-nav a.active { border-left: none; border-bottom-color: var(--accent); }
-  .config-grid { grid-template-columns: 1fr; gap: 1.5rem; }
-  .config-nav { position: static; flex-direction: row; min-height: 0; overflow-x: auto; }
-  .config-nav-list { flex-direction: row; }
-  .config-nav-bottom {
+  /* In mobile, the Users sub-list shouldn't auto-push to the bottom — it
+     sits inline after the top group with a small left divider. */
+  .config-side-nav { bottom: auto; flex-direction: row; }
+  .config-side-nav-bottom {
     margin-top: 0;
     padding-top: 0;
     padding-left: 1rem;
     border-top: none;
     border-left: 1px solid var(--fg-muted);
   }
-  .config-nav a { border-left: none; border-bottom: 3px solid transparent; }
-  .config-nav a.active { border-left: none; border-bottom-color: var(--accent); }
   .config-field { grid-template-columns: 1fr; align-items: stretch; gap: .35rem; }
 }
