@@ -25,6 +25,9 @@ impl AppState {
     pub fn admin_state(
         &self,
         prometheus: metrics_exporter_prometheus::PrometheusHandle,
+        config_path: Arc<ArcSwap<Option<std::path::PathBuf>>>,
+        config_applier: rustyice_admin::api::config::ConfigApplierRef,
+        config_write_lock: Arc<tokio::sync::Mutex<()>>,
     ) -> AdminState {
         AdminState {
             mounts: self.mounts.clone(),
@@ -36,6 +39,9 @@ impl AppState {
             version: env!("CARGO_PKG_VERSION"),
             stream_port: self.config.load().server.stream_bind.port(),
             config: self.config.clone(),
+            config_path,
+            config_applier,
+            config_write_lock,
         }
     }
 }

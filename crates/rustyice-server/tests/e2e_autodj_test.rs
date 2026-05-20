@@ -149,7 +149,19 @@ async fn build_server_with_autodj(loop_playlist: bool) -> TestServer {
     let prom_handle = recorder.handle();
     // Best-effort install — duplicate set is fine across tests.
     let _ = metrics::set_global_recorder(recorder);
-    let admin_state = app_state.admin_state(prom_handle);
+    struct NoopApplier;
+    #[async_trait::async_trait]
+    impl rustyice_admin::api::config::ConfigApplier for NoopApplier {
+        async fn apply(&self, _: rustyice_core::config::Config) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+    }
+    let admin_state = app_state.admin_state(
+        prom_handle,
+        Arc::new(ArcSwap::from_pointee(None)),
+        Arc::new(NoopApplier) as rustyice_admin::api::config::ConfigApplierRef,
+        Arc::new(tokio::sync::Mutex::new(())),
+    );
     let admin_router = build_admin_router(admin_state);
     let stream_router = build_stream_router(app_state.clone());
 

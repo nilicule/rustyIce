@@ -26,6 +26,24 @@ use rustyice_core::config::{TranscodeConfig, TranscodeFormat};
 
 const FAKE_MP3_FRAME: &[u8] = &[0xFF, 0xFB, 0x90, 0x04, 0x00, 0x00, 0x00, 0x00];
 
+struct NoopApplier;
+#[async_trait::async_trait]
+impl rustyice_admin::api::config::ConfigApplier for NoopApplier {
+    async fn apply(&self, _: Config) -> Result<Vec<String>, String> {
+        Ok(vec![])
+    }
+}
+
+fn test_config_path() -> Arc<ArcSwap<Option<std::path::PathBuf>>> {
+    Arc::new(ArcSwap::from_pointee(None))
+}
+fn test_applier() -> rustyice_admin::api::config::ConfigApplierRef {
+    Arc::new(NoopApplier)
+}
+fn test_write_lock() -> Arc<tokio::sync::Mutex<()>> {
+    Arc::new(tokio::sync::Mutex::new(()))
+}
+
 async fn build_test_server() -> (u16, u16, CancellationToken) {
     build_test_server_with(None, None).await
 }
@@ -121,6 +139,9 @@ async fn build_test_server_with(
         version: env!("CARGO_PKG_VERSION"),
         stream_port: 0,
         config: app_state.config.clone(),
+        config_path: test_config_path(),
+        config_applier: test_applier(),
+        config_write_lock: test_write_lock(),
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -241,6 +262,9 @@ async fn build_test_server_with_sessions() -> (u16, u16, CancellationToken, Arc<
         version: env!("CARGO_PKG_VERSION"),
         stream_port: 0,
         config: app_state.config.clone(),
+        config_path: test_config_path(),
+        config_applier: test_applier(),
+        config_write_lock: test_write_lock(),
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -672,6 +696,9 @@ async fn build_test_server_with_transcode_cfg(
         version: env!("CARGO_PKG_VERSION"),
         stream_port: 0,
         config: app_state.config.clone(),
+        config_path: test_config_path(),
+        config_applier: test_applier(),
+        config_write_lock: test_write_lock(),
     };
 
     let stream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

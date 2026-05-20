@@ -198,7 +198,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Build routers ───────────────────────────────────────────────────────
     let stream_router = build_stream_router(app_state.clone());
 
-    let admin_state = app_state.admin_state(prom_handle);
+    let config_path_swap = Arc::new(ArcSwap::from_pointee(
+        match &config_source {
+            ConfigSource::File(p) => Some(p.clone()),
+            ConfigSource::Defaults => None,
+        },
+    ));
+    let config_write_lock = Arc::new(tokio::sync::Mutex::new(()));
+
+    // Placeholder applier — Task 6 replaces this with one that calls
+    // `rustyice_server::config_reload::apply_config`.
+    struct NoopApplier;
+    #[async_trait::async_trait]
+    impl rustyice_admin::api::config::ConfigApplier for NoopApplier {
+        async fn apply(&self, _: rustyice_core::config::Config) -> Result<Vec<String>, String> {
+            Err("config apply not wired yet".to_string())
+        }
+    }
+    let config_applier: rustyice_admin::api::config::ConfigApplierRef = Arc::new(NoopApplier);
+
+    let admin_state = app_state.admin_state(
+        prom_handle,
+        config_path_swap.clone(),
+        config_applier,
+        config_write_lock.clone(),
+    );
     let admin_router = build_admin_router(admin_state);
 
     // ── Spawn SIGHUP watcher ────────────────────────────────────────────────

@@ -11,6 +11,7 @@ use rustyice_core::error::AuthError;
 use rustyice_core::mount::{ActiveMount, MountInfo, MountMetadata, MountRegistry};
 use rustyice_core::traits::{AuthBackend, BroadcastBus};
 use rustyice_core::types::{CodecId, StreamPacket};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,6 +45,14 @@ impl AuthBackend for TestAuth {
     }
     async fn reload(&self, _config: &Config) -> Result<(), AuthError> {
         Ok(())
+    }
+}
+
+struct StubApplier;
+#[async_trait]
+impl rustyice_admin::api::config::ConfigApplier for StubApplier {
+    async fn apply(&self, _new_cfg: Config) -> Result<Vec<String>, String> {
+        Ok(vec![])
     }
 }
 
@@ -85,6 +94,9 @@ fn make_state_with_admin(password: Option<&str>) -> AdminState {
         version: "test",
         stream_port: 8000,
         config: Arc::new(ArcSwap::from_pointee(cfg)),
+        config_path: Arc::new(ArcSwap::from_pointee(None::<PathBuf>)),
+        config_applier: Arc::new(StubApplier),
+        config_write_lock: Arc::new(tokio::sync::Mutex::new(())),
     }
 }
 
