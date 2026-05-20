@@ -497,8 +497,38 @@ pub struct UserSubBody {
 
 pub async fn put_users(
     State(state): State<AdminState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<UsersPutBody>,
 ) -> impl IntoResponse {
+    // The authenticated user must remain in the new list with the Admin
+    // role. Without this guard, an admin could lock themselves out — even
+    // when other admins exist (the requester's session would become useless
+    // until they log in as a different admin). The "at least one admin
+    // must remain" check in validate_users_patch is a separate, weaker
+    // backstop covering the case where the list is empty of admins.
+    let session = crate::api::auth::session_role(&state, &headers);
+    let requester_username = session.as_ref().map(|(u, _)| u.as_str()).unwrap_or("");
+    if !requester_username.is_empty() {
+        let still_admin = body
+            .users
+            .iter()
+            .any(|u| u.username.trim() == requester_username && u.role == "admin");
+        if !still_admin {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(PutError {
+                    error: format!(
+                        "cannot remove or demote your own account ({requester_username}) — \
+                         have another admin do it"
+                    ),
+                    field: None,
+                    disk_written: false,
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let current = state.config.load_full();
     // username → existing bcrypt hash, used as the fallback when a
     // request omits the password (or sends the redacted sentinel).

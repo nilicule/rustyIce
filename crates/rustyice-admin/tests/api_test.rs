@@ -2322,3 +2322,90 @@ async fn get_config_scrubs_admin_only_sections_for_operator() {
     assert!(json["autodjs"].is_array());
     assert!(json["relays"].is_array());
 }
+
+#[tokio::test]
+async fn put_users_rejects_self_deletion() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    // Add a second admin so the "at least one admin must remain" rule
+    // would pass — but self-deletion should still be rejected.
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.auth.users.push(rustyice_core::config::UserConfig {
+            username: "second".into(),
+            password_bcrypt: "$2y$12$placeholder2".into(),
+            role: rustyice_core::config::UserRole::Admin,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    // Omit "admin" from the new list.
+    let body = serde_json::json!({
+        "users": [{ "username": "second", "role": "admin" }]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/users")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("own account"));
+    assert!(applier.take().is_none());
+}
+
+#[tokio::test]
+async fn put_users_rejects_self_demotion() {
+    let applier = Arc::new(RecordingApplier::new());
+    let state = make_state_with_applier(applier.clone());
+    {
+        let mut cfg = (*state.config.load_full()).clone();
+        cfg.auth.users.push(rustyice_core::config::UserConfig {
+            username: "second".into(),
+            password_bcrypt: "$2y$12$placeholder2".into(),
+            role: rustyice_core::config::UserRole::Admin,
+        });
+        state.config.store(Arc::new(cfg));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _ = install_tempfile_config(&state, &dir);
+    let cookie = session_cookie(&state, "admin");
+
+    // Demote self to operator while another admin remains. Still rejected
+    // because the session token would lose its admin powers mid-flight.
+    let body = serde_json::json!({
+        "users": [
+            { "username": "admin",  "role": "operator" },
+            { "username": "second", "role": "admin"    }
+        ]
+    });
+
+    let app = build_admin_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config/users")
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(applier.take().is_none());
+}
