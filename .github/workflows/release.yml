@@ -79,7 +79,28 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Build
+      # Linux binaries are linked against glibc 2.17 (CentOS/RHEL 7) via
+      # cargo-zigbuild so they run on older distros — a plain `cargo build` on
+      # ubuntu-latest links a far newer glibc and fails on EL7 hosts. zig
+      # supplies the cross-toolchain + sysroot; macOS/Windows build natively.
+      - name: Set up zig (linux)
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild (linux)
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build (linux, glibc 2.17)
+        if: runner.os == 'Linux'
+        run: cargo zigbuild --release --bin rustyice --target ${{ matrix.target }}.2.17
+
+      - name: Build (macOS / Windows)
+        if: runner.os != 'Linux'
         run: cargo build --release --bin rustyice --target ${{ matrix.target }}
 
       - name: Rename + upload binary
@@ -124,13 +145,21 @@ jobs:
         with:
           key: package-${{ matrix.target }}
 
+      - name: Set up zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
       # Prebuilt binaries — far faster than `cargo install`.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deb,cargo-generate-rpm
+          tool: cargo-deb,cargo-generate-rpm,cargo-zigbuild
 
-      - name: Build release binary
-        run: cargo build --release --bin rustyice --target ${{ matrix.target }} -p rustyice-server
+      # Link against glibc 2.17 (CentOS/RHEL 7) so the .deb/.rpm install on
+      # older distros; cargo-deb/-rpm then package this prebuilt binary
+      # (--no-build / target dir is unchanged by the .2.17 glibc suffix).
+      - name: Build release binary (glibc 2.17)
+        run: cargo zigbuild --release --bin rustyice --target ${{ matrix.target }}.2.17 -p rustyice-server
 
       - name: Build .deb
         run: cargo deb -p rustyice-server --no-build --target ${{ matrix.target }}
