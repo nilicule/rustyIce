@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-07-28
+
+### Security
+- Bumped the transitive `quinn-proto` dependency from 0.11.14 to 0.11.16 to clear a Dependabot advisory. The crate reaches us through `reqwest`'s optional HTTP/3 support, which this project does not enable, so no shipped code path was affected — the update only removes the vulnerable version from `Cargo.lock`.
+
+[1.0.4]: https://github.com/nilicule/rustyice/releases/tag/v1.0.4
+
 ## [1.0.3] - 2026-05-21
 
 ### Fixed
