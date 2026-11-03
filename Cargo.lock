@@ -132,9 +132,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.16.3"
+version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ec6fb3fe69024a75fa7e1bfb48aa6cf59706a101658ea01bfd33b2b248a038f"
+checksum = "048006790404103c488e6c5616b3e7e702a71292aadda08e8f7698a9e0d2eb53"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -142,14 +142,15 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.40.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f50037ee5e1e41e7b8f9d161680a725bd1626cb6f8c7e901f91f942850852fe7"
+checksum = "8bfbe32ac36b3c428696ce315464181bc4029d689fd58e3f2a4e58c252242f52"
 dependencies = [
  "cc",
  "cmake",
  "dunce",
  "fs_extra",
+ "pkg-config",
 ]
 
 [[package]]
@@ -1499,6 +1500,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1937,9 +1944,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -2000,9 +2007,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -2018,7 +2025,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rustyice-admin"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2047,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-auth"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2059,7 +2066,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-autodj"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -2085,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-codec"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "bytes",
  "rustyice-core",
@@ -2094,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2109,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-ingest"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2126,7 +2133,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-loadtest"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -2135,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-output"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2150,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-server"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2189,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "rustyice-transcode"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "bytes",
  "mp3lame-sys",
